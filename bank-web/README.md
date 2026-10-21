@@ -41,6 +41,16 @@ The profile page also includes the Story 3 deposit form:
   two decimal places. Each should show a validation error without changing the
   balance.
 
+The same page includes the Story 4 withdrawal form:
+
+- Deposit enough money to fund a withdrawal, then withdraw `$0.01`, `$40.25`,
+  or `$10,000.00` within your available balance. Confirm the balance decreases
+  and the withdrawal details appear.
+- Try `$0.00`, a negative amount, `$10,000.01`, and more than two decimal
+  places to verify input validation.
+- Try withdrawing more than the checking balance. The API's insufficient-funds
+  error should appear, and the displayed balance should remain unchanged.
+
 The API authenticates profile requests using the signed-in session. Its
 in-memory database is process-local and is cleared when the API restarts; it
 cannot be opened from an external SQLite viewer while using `:memory:`.

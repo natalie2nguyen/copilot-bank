@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseDepositAmountToCents } from "./money";
+import {
+  parseDepositAmountToCents,
+  parseWithdrawalAmountToCents,
+} from "./money";
 
 describe("parseDepositAmountToCents", () => {
   it.each([
@@ -9,6 +12,27 @@ describe("parseDepositAmountToCents", () => {
     ["$10,000.00", 1_000_000],
   ] as const)("converts %s to %i cents", (input, expectedCents) => {
     expect(parseDepositAmountToCents(input)).toBe(expectedCents);
+  });
+
+  describe("parseWithdrawalAmountToCents", () => {
+    it.each([
+      ["0.01", 1],
+      ["$40.25", 4_025],
+      ["$10,000.00", 1_000_000],
+    ] as const)("converts %s to %i cents", (input, expectedCents) => {
+      expect(parseWithdrawalAmountToCents(input)).toBe(expectedCents);
+    });
+
+    it.each([
+      "0.00",
+      "-0.01",
+      "$10,000.01",
+      "1.234",
+      "1,23.45",
+      "",
+    ])("rejects invalid withdrawal amount %s", (input) => {
+      expect(() => parseWithdrawalAmountToCents(input)).toThrow();
+    });
   });
 
   it.each([

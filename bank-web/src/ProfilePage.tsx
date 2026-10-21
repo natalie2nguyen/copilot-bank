@@ -1,5 +1,9 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
-import { formatCentsAsCurrency, parseDepositAmountToCents } from "./money";
+import {
+  formatCentsAsCurrency,
+  parseDepositAmountToCents,
+  parseWithdrawalAmountToCents,
+} from "./money";
 
 type Address = {
   street?: string;
@@ -34,6 +38,15 @@ type DepositResponse = {
   transaction: DepositTransaction;
 };
 
+type WithdrawalTransaction = Omit<DepositTransaction, "type"> & {
+  type: "WITHDRAWAL";
+};
+
+type WithdrawalResponse = {
+  newBalanceCents: number;
+  transaction: WithdrawalTransaction;
+};
+
 type ProfileDraft = {
   name: string;
   email: string;
@@ -45,8 +58,11 @@ type ProfileDraft = {
 };
 
 type ApiErrorBody = {
-  error?: { message?: string };
+  error?: { code?: string; message?: string };
 };
+
+const invalidTransactionMessage =
+  "The transaction is invalid. Enter an amount from $0.01 to $10,000.00 with no more than two decimal places.";
 
 const addressFields: Array<keyof Address> = [
   "street",
@@ -56,9 +72,15 @@ const addressFields: Array<keyof Address> = [
   "country",
 ];
 
-async function responseError(response: Response): Promise<string> {
+async function responseError(
+  response: Response,
+  messagesByCode: Record<string, string> = {},
+): Promise<string> {
   try {
     const body = (await response.json()) as ApiErrorBody;
+    if (body.error?.code && messagesByCode[body.error.code]) {
+      return messagesByCode[body.error.code];
+    }
     if (body.error?.message) return body.error.message;
   } catch {
     return `Request failed with status ${response.status}.`;
@@ -99,13 +121,20 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
   const [balanceCents, setBalanceCents] = useState<number | null>(null);
   const [depositAmount, setDepositAmount] = useState("");
   const [depositMemo, setDepositMemo] = useState("");
+  const [depositError, setDepositError] = useState("");
   const [depositTransaction, setDepositTransaction] =
     useState<DepositTransaction | null>(null);
+  const [withdrawalAmount, setWithdrawalAmount] = useState("");
+  const [withdrawalMemo, setWithdrawalMemo] = useState("");
+  const [withdrawalError, setWithdrawalError] = useState("");
+  const [withdrawalTransaction, setWithdrawalTransaction] =
+    useState<WithdrawalTransaction | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isDepositing, setIsDepositing] = useState(false);
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -287,13 +316,14 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
     event.preventDefault();
     setMessage("");
     setError("");
+    setDepositError("");
     setDepositTransaction(null);
 
     let amountCents: number;
     try {
       amountCents = parseDepositAmountToCents(depositAmount);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Enter a valid deposit amount.");
+    } catch {
+      setDepositError(invalidTransactionMessage);
       return;
     }
 
@@ -310,7 +340,11 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
           ...(depositMemo.trim() ? { memo: depositMemo.trim() } : {}),
         }),
       });
-      if (!response.ok) throw new Error(await responseError(response));
+      if (!response.ok) {
+        throw new Error(await responseError(response, {
+          INVALID_AMOUNT: invalidTransactionMessage,
+        }));
+      }
       const result = (await response.json()) as DepositResponse;
       setBalanceCents(result.newBalanceCents);
       setDepositTransaction(result.transaction);
@@ -318,9 +352,63 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
       setDepositMemo("");
       setMessage(`Deposit complete. Your new balance is ${formatCentsAsCurrency(result.newBalanceCents)}.`);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not complete the deposit.");
+      setDepositError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not complete the deposit.",
+      );
     } finally {
       setIsDepositing(false);
+    }
+  }
+
+  async function submitWithdrawal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    setWithdrawalError("");
+    setWithdrawalTransaction(null);
+
+    let amountCents: number;
+    try {
+      amountCents = parseWithdrawalAmountToCents(withdrawalAmount);
+    } catch {
+      setWithdrawalError(invalidTransactionMessage);
+      return;
+    }
+
+    setIsWithdrawing(true);
+    try {
+      const response = await fetch("/api/accounts/me/withdrawals", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          amountCents,
+          ...(withdrawalMemo.trim() ? { memo: withdrawalMemo.trim() } : {}),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseError(response, {
+          INVALID_AMOUNT: invalidTransactionMessage,
+        }));
+      }
+      const result = (await response.json()) as WithdrawalResponse;
+      setBalanceCents(result.newBalanceCents);
+      setWithdrawalTransaction(result.transaction);
+      setWithdrawalAmount("");
+      setWithdrawalMemo("");
+      setMessage(`Withdrawal complete. Your new balance is ${formatCentsAsCurrency(result.newBalanceCents)}.`);
+    } catch (caught) {
+      setWithdrawalError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not complete the withdrawal.",
+      );
+    } finally {
+      setIsWithdrawing(false);
     }
   }
 
@@ -385,16 +473,24 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
             <label>
               Amount
               <input
-                aria-describedby="deposit-amount-hint"
+                aria-describedby={`deposit-amount-hint${depositError ? " deposit-amount-error" : ""}`}
                 autoComplete="off"
                 inputMode="decimal"
-                onChange={(event) => setDepositAmount(event.target.value)}
+                onChange={(event) => {
+                  setDepositAmount(event.target.value);
+                  setDepositError("");
+                }}
                 placeholder="0.00"
                 required
                 type="text"
                 value={depositAmount}
               />
             </label>
+            {depositError && (
+              <p className="field-error" id="deposit-amount-error" role="alert">
+                {depositError}
+              </p>
+            )}
             <p className="field-hint" id="deposit-amount-hint">
               Enter $0.01 to $10,000.00, with up to two decimal places.
             </p>
@@ -407,7 +503,11 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
                 value={depositMemo}
               />
             </label>
-            <button className="submit" disabled={isDepositing} type="submit">
+            <button
+              className="submit"
+              disabled={isDepositing || !depositAmount.trim()}
+              type="submit"
+            >
               {isDepositing ? "Processing..." : "Deposit money"}
             </button>
           </form>
@@ -430,6 +530,79 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
               <div>
                 <strong>Recorded</strong>
                 <span>{new Date(depositTransaction.timestamp).toLocaleString()}</span>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="withdrawal-section" aria-labelledby="withdrawal-title">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">USE YOUR FUNDS</p>
+              <h2 id="withdrawal-title">Withdraw money</h2>
+            </div>
+          </div>
+          <form className="withdrawal-form" onSubmit={(event) => void submitWithdrawal(event)}>
+            <label>
+              Amount
+              <input
+                aria-describedby={`withdrawal-amount-hint${withdrawalError ? " withdrawal-amount-error" : ""}`}
+                autoComplete="off"
+                inputMode="decimal"
+                onChange={(event) => {
+                  setWithdrawalAmount(event.target.value);
+                  setWithdrawalError("");
+                }}
+                placeholder="0.00"
+                required
+                type="text"
+                value={withdrawalAmount}
+              />
+            </label>
+            {withdrawalError && (
+              <p className="field-error" id="withdrawal-amount-error" role="alert">
+                {withdrawalError}
+              </p>
+            )}
+            <p className="field-hint" id="withdrawal-amount-hint">
+              Enter $0.01 to $10,000.00, with up to two decimal places.
+            </p>
+            <label>
+              Memo <span className="optional-label">Optional</span>
+              <input
+                maxLength={500}
+                onChange={(event) => setWithdrawalMemo(event.target.value)}
+                placeholder="e.g. Cash withdrawal"
+                value={withdrawalMemo}
+              />
+            </label>
+            <button
+              className="withdraw-submit"
+              disabled={isWithdrawing || !withdrawalAmount.trim()}
+              type="submit"
+            >
+              {isWithdrawing ? "Processing..." : "Withdraw money"}
+            </button>
+          </form>
+          {withdrawalTransaction && (
+            <div className="withdrawal-result" aria-label="Withdrawal confirmation">
+              <div>
+                <strong>Withdrawal successful</strong>
+                <span>{formatCentsAsCurrency(withdrawalTransaction.amountCents)} withdrawn</span>
+              </div>
+              <div>
+                <strong>New balance</strong>
+                <span>{formatCentsAsCurrency(withdrawalTransaction.resultingBalanceCents)}</span>
+              </div>
+              {withdrawalTransaction.memo && (
+                <div>
+                  <strong>Memo</strong>
+                  <span>{withdrawalTransaction.memo}</span>
+                </div>
+              )}
+              <div>
+                <strong>Recorded</strong>
+                <span>{new Date(withdrawalTransaction.timestamp).toLocaleString()}</span>
               </div>
             </div>
           )}
