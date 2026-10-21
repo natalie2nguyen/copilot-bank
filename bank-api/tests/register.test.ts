@@ -1,13 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { beforeEach, describe, expect, it } from "vitest";
 import request from "supertest";
 import app from "../src/app.js";
 
 const registerPath = "/api/auth/register";
 const loginPath = "/api/auth/login";
 
-const validRegistration = {
+let validRegistration = {
   name: "Taylor Example",
-  email: "taylor@example.com",
+  email: "",
   password: "correct-horse-battery",
 };
 
@@ -35,6 +36,13 @@ function entriesIn(value: unknown): Array<[string, unknown]> {
 }
 
 describe("registration and account creation", () => {
+  beforeEach(() => {
+    validRegistration = {
+      ...validRegistration,
+      email: `taylor-${randomUUID()}@example.com`,
+    };
+  });
+
   it("registers a profile without an address and creates a zero-balance account (01-register.feature: Register successfully without an address)", async () => {
     const response = await request(app)
       .post(registerPath)
@@ -113,6 +121,13 @@ describe("registration and account creation", () => {
 });
 
 describe("login", () => {
+  beforeEach(() => {
+    validRegistration = {
+      ...validRegistration,
+      email: `taylor-${randomUUID()}@example.com`,
+    };
+  });
+
   it("returns an authentication token for valid credentials (01-register.feature: Log in successfully)", async () => {
     const registration = await request(app)
       .post(registerPath)

@@ -198,7 +198,7 @@ app.post("/api/auth/register", (request, response) => {
 app.post("/api/auth/login", (request, response) => {
   const parsed = loginSchema.safeParse(request.body);
   if (!parsed.success) {
-    sendError(response, 401, "INVALID_CREDENTIALS", "Email or password is incorrect.");
+    sendError(response, 401, "INVALID_CREDENTIALS", "Unable to sign in with those credentials.");
     return;
   }
 
@@ -212,7 +212,7 @@ app.post("/api/auth/login", (request, response) => {
     !customer ||
     !timingSafeEqual(candidateHash, customer.passwordHash)
   ) {
-    sendError(response, 401, "INVALID_CREDENTIALS", "Email or password is incorrect.");
+    sendError(response, 401, "INVALID_CREDENTIALS", "Unable to sign in with those credentials.");
     return;
   }
 
