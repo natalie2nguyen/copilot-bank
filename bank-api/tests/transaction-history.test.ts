@@ -82,6 +82,22 @@ describe("transaction history", () => {
     expect(transactionList(response.body)).toHaveLength(5);
   });
 
+  it("rejects a page size larger than the supported maximum", async () => {
+    const customer = await createCustomer();
+    const response = await authorizedGet(
+      `${transactionsPath}?pageSize=101`,
+      customer,
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        message: expect.any(String),
+      },
+    });
+  });
+
   it("filters transaction history by transaction type (08-transaction-history.feature: Filter transaction history by type)", async () => {
     const customer = await createCustomerWithCheckingBalance(1_000);
     const withdrawal = await request(app)

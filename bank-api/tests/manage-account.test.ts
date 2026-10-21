@@ -4,6 +4,8 @@ import app from "../src/app.js";
 
 const profilePath = "/api/me";
 const avatarPath = "/api/me/avatar";
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const jpegSignature = Buffer.from([0xff, 0xd8, 0xff]);
 let customerSequence = 0;
 
 type Customer = {
@@ -245,6 +247,7 @@ describe("manage account profile", () => {
     async (_format, mimeType, size) => {
       const customer = await createCustomer();
       const image = Buffer.alloc(size);
+      (mimeType === "image/png" ? pngSignature : jpegSignature).copy(image);
       const upload = await authorized("put", avatarPath, customer.token)
         .attach("avatar", image, { filename: "profile-image", contentType: mimeType });
 
@@ -268,6 +271,18 @@ describe("manage account profile", () => {
     expectErrorResponse(response);
   });
 
+  it("rejects image content that does not match its declared MIME type", async () => {
+    const customer = await createCustomer();
+    const response = await authorized("put", avatarPath, customer.token)
+      .attach("avatar", Buffer.from("not a PNG"), {
+        filename: "profile.png",
+        contentType: "image/png",
+      });
+
+    expect(response.status).toBe(415);
+    expectErrorResponse(response);
+  });
+
   it("rejects a profile picture larger than 2 MB with 413 (02-manage-account.feature: Reject a profile picture larger than 2 MB)", async () => {
     const customer = await createCustomer();
     const response = await authorized("put", avatarPath, customer.token)
@@ -282,8 +297,9 @@ describe("manage account profile", () => {
 
   it("removes the profile picture (02-manage-account.feature: Remove my profile picture)", async () => {
     const customer = await createCustomer();
+    const image = Buffer.from([...pngSignature, 0x00]);
     const upload = await authorized("put", avatarPath, customer.token)
-      .attach("avatar", Buffer.from("image"), {
+      .attach("avatar", image, {
         filename: "profile.png",
         contentType: "image/png",
       });

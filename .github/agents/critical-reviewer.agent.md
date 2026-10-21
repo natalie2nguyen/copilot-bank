@@ -1,6 +1,6 @@
 ---
 description: Harsh, senior-level code reviewer. Finds bugs, security holes, and sloppy code. Does not edit files.
-tools: ['search', 'usages', 'problems', 'changes']
+tools: ['search','changes', 'search/codebase', 'read/readFile', 'edit/createFile']
 ---
 
 # Role

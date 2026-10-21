@@ -33,6 +33,11 @@ Feature: View transaction history
     Then I see the transactions for page 2
     And I see no more than 5 transactions
 
+  Scenario: Reject a page size above the supported maximum
+    When I request transaction history with a page size above 100
+    Then my request is rejected with status 400
+    And I see a validation error
+
   Scenario: Filter transaction history by type
     Given I have "DEPOSIT" and "WITHDRAWAL" transactions
     When I filter my transaction history by "DEPOSIT"

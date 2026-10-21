@@ -9,6 +9,7 @@ app.use(express.json());
 
 const CREDIT_LIMIT_CENTS = 500_000;
 const MAX_TRANSACTION_CENTS = 1_000_000;
+const MAX_TRANSACTION_PAGE_SIZE = 100;
 
 type TransactionType =
   | "DEPOSIT"
@@ -37,7 +38,6 @@ type Customer = {
   accountNumber: string;
   balanceCents: number;
   loanBalanceCents: number;
-  transactions: Transaction[];
   address?: {
     street?: string;
     city?: string;
@@ -77,6 +77,28 @@ const wireSchema = z.object({
   recipientAccountNumber: z.string().regex(/^\d{10}$/),
   amountCents: z.number().int().positive().max(MAX_TRANSACTION_CENTS),
   memo: z.string().optional(),
+});
+const transactionQuerySchema = z.object({
+  page: z.string().regex(/^[1-9]\d*$/).transform(Number)
+    .pipe(z.number().int().positive()).default("1"),
+  pageSize: z.string().regex(/^[1-9]\d*$/).transform(Number)
+    .pipe(z.number().int().positive().max(MAX_TRANSACTION_PAGE_SIZE))
+    .default("20"),
+  type: z.enum([
+    "DEPOSIT",
+    "WITHDRAWAL",
+    "LOAN_DRAW",
+    "LOAN_PAYMENT",
+    "WIRE_IN",
+    "WIRE_OUT",
+  ]).optional(),
+}).superRefine(({ page, pageSize }, context) => {
+  if (!Number.isSafeInteger((page - 1) * pageSize)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "The requested transaction page is too large.",
+    });
+  }
 });
 const addressSchema = z.object({
   street: z.string().trim().min(1).optional(),
@@ -174,7 +196,6 @@ function customerFromRow(row: DatabaseRow): Customer {
     accountNumber: requiredString(row, "account_number"),
     balanceCents: requiredNumber(row, "balance_cents"),
     loanBalanceCents: requiredNumber(row, "loan_balance_cents"),
-    transactions: [],
     hasAvatar: requiredNumber(row, "has_avatar") === 1,
   };
   const address = {
@@ -187,15 +208,6 @@ function customerFromRow(row: DatabaseRow): Customer {
   if (Object.values(address).some((value) => value !== undefined)) {
     customer.address = address;
   }
-  customer.transactions = db.prepare(`
-    SELECT type, amount_cents, direction, timestamp,
-           resulting_balance_cents, memo, wire_id
-    FROM transactions
-    WHERE customer_id = ?
-    ORDER BY id DESC
-  `).all(customer.id).map((transactionRow) =>
-    transactionFromRow(transactionRow as DatabaseRow),
-  );
   return customer;
 }
 
@@ -356,8 +368,22 @@ function makeTransaction(
     transaction.wireId = wireId;
   }
   insertTransaction(customer, transaction);
-  customer.transactions.unshift(transaction);
   return transaction;
+}
+
+function hasImageSignature(
+  data: Buffer,
+  mimeType: "image/png" | "image/jpeg",
+): boolean {
+  if (mimeType === "image/png") {
+    return data.subarray(0, 8).equals(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    );
+  }
+  return data.length >= 3 &&
+    data[0] === 0xff &&
+    data[1] === 0xd8 &&
+    data[2] === 0xff;
 }
 
 app.post("/api/auth/register", (request, response) => {
@@ -389,7 +415,6 @@ app.post("/api/auth/register", (request, response) => {
     accountNumber,
     balanceCents: 0,
     loanBalanceCents: 0,
-    transactions: [],
     hasAvatar: false,
   };
   withDatabaseTransaction(() => {
@@ -513,6 +538,10 @@ app.put("/api/me/avatar", (request, response, next) => {
   }
   if (request.file.mimetype !== "image/png" && request.file.mimetype !== "image/jpeg") {
     sendError(response, 415, "UNSUPPORTED_MEDIA_TYPE", "Profile pictures must be PNG or JPEG.");
+    return;
+  }
+  if (!hasImageSignature(request.file.buffer, request.file.mimetype)) {
+    sendError(response, 415, "UNSUPPORTED_MEDIA_TYPE", "The uploaded file does not match its image type.");
     return;
   }
 
@@ -766,46 +795,64 @@ app.get("/api/accounts/me/transactions", (request, response) => {
   const customer = getAuthenticatedCustomer(request, response);
   if (!customer) return;
 
-  const page = Number(request.query.page ?? 1);
-  const pageSize = Number(request.query.pageSize ?? 20);
-  if (
-    !Number.isInteger(page) ||
-    page < 1 ||
-    !Number.isInteger(pageSize) ||
-    pageSize < 1
-  ) {
-    sendError(response, 400, "VALIDATION_ERROR", "Page and page size must be positive integers.");
+  const parsed = transactionQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    sendError(response, 400, "VALIDATION_ERROR", "Page, page size, or transaction type is invalid.");
     return;
   }
 
-  let transactions = customer.transactions;
-  if (request.query.type !== undefined) {
-    const type = request.query.type;
-    if (typeof type !== "string" || ![
-      "DEPOSIT",
-      "WITHDRAWAL",
-      "LOAN_DRAW",
-      "LOAN_PAYMENT",
-      "WIRE_IN",
-      "WIRE_OUT",
-    ].includes(type)) {
-      sendError(response, 400, "VALIDATION_ERROR", "Transaction type is invalid.");
-      return;
-    }
-    transactions = transactions.filter((transaction) => transaction.type === type);
-  }
-
+  const { page, pageSize, type } = parsed.data;
   const start = (page - 1) * pageSize;
+  const filterClause = type === undefined ? "" : " AND type = ?";
+  const parameters = type === undefined
+    ? [customer.id]
+    : [customer.id, type];
+  const totalRow = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM transactions
+    WHERE customer_id = ?${filterClause}
+  `).get(...parameters) as DatabaseRow;
+  const transactionRows = db.prepare(`
+    SELECT type, amount_cents, direction, timestamp,
+           resulting_balance_cents, memo, wire_id
+    FROM transactions
+    WHERE customer_id = ?${filterClause}
+    ORDER BY id DESC
+    LIMIT ? OFFSET ?
+  `).all(...parameters, pageSize, start);
   response.json({
-    transactions: transactions.slice(start, start + pageSize),
+    transactions: transactionRows.map((row) =>
+      transactionFromRow(row as DatabaseRow),
+    ),
     page,
     pageSize,
-    total: transactions.length,
+    total: requiredNumber(totalRow, "total"),
   });
 });
 
 app.use((_request, response) => {
   sendError(response, 404, "NOT_FOUND", "The requested resource was not found.");
+});
+
+app.use((error: unknown, _request: Request, response: Response, _next: (error?: unknown) => void) => {
+  if (error instanceof multer.MulterError) {
+    if (error.code === "LIMIT_FILE_SIZE") {
+      sendError(response, 413, "FILE_TOO_LARGE", "Profile pictures must not exceed 2 MB.");
+      return;
+    }
+    sendError(response, 400, "INVALID_UPLOAD", "The uploaded file could not be processed.");
+    return;
+  }
+  if (
+    error instanceof SyntaxError &&
+    "type" in error &&
+    error.type === "entity.parse.failed"
+  ) {
+    sendError(response, 400, "INVALID_JSON", "The request body must contain valid JSON.");
+    return;
+  }
+  console.error("Unhandled API error:", error);
+  sendError(response, 500, "INTERNAL_SERVER_ERROR", "An unexpected server error occurred.");
 });
 
 export default app;
