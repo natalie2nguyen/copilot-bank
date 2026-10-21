@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import ProfilePage from "./ProfilePage";
 import "./App.css";
 
 type Mode = "register" | "login";
@@ -18,6 +19,9 @@ type ApiErrorResponse = {
 
 function App() {
   const [mode, setMode] = useState<Mode>("register");
+  const [token, setToken] = useState(
+    () => sessionStorage.getItem("bankToken") ?? "",
+  );
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -66,7 +70,7 @@ function App() {
       } else {
         const login = result as { token: string };
         sessionStorage.setItem("bankToken", login.token);
-        setMessage("Signed in successfully.");
+        setToken(login.token);
       }
     } catch (caught) {
       setError(
@@ -84,6 +88,18 @@ function App() {
     setMessage("");
     setError("");
     setCreatedAccount(null);
+  }
+
+  function signOut() {
+    sessionStorage.removeItem("bankToken");
+    setToken("");
+    setMode("login");
+    setMessage("");
+    setError("");
+  }
+
+  if (token) {
+    return <ProfilePage token={token} onLogout={signOut} />;
   }
 
   return (

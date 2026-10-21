@@ -15,6 +15,23 @@
   margin: 8px 0 48px;
 }
 
+.profile-page .brand {
+  margin-bottom: 32px;
+}
+
+.logout-button {
+  margin-left: auto;
+  padding: 8px 12px;
+  border: 1px solid #d8e2dd;
+  border-radius: 8px;
+  background: #fff;
+  color: #176b57;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .brand-mark {
   display: grid;
   width: 34px;
@@ -32,6 +49,134 @@
   border-radius: 18px;
   background: #fff;
   box-shadow: 0 16px 48px rgb(26 57 47 / 8%);
+}
+
+.profile-card {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.profile-heading {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.profile-heading .intro {
+  margin-bottom: 0;
+}
+
+.avatar {
+  display: grid;
+  width: 76px;
+  height: 76px;
+  flex: 0 0 76px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #e7f2ec;
+  color: #176b57;
+  font-size: 24px;
+  font-weight: 750;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.picture-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 28px;
+  padding: 18px 0;
+  border-top: 1px solid #e7eeea;
+  border-bottom: 1px solid #e7eeea;
+}
+
+.picture-section h2,
+.profile-form h2 {
+  margin: 0;
+  color: #23483e;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.picture-section p {
+  margin: 4px 0 0;
+  color: #72847d;
+  font-size: 12px;
+}
+
+.picture-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.upload-button,
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid #d8e2dd;
+  border-radius: 8px;
+  background: #fff;
+  color: #176b57;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.upload-button input {
+  display: none;
+}
+
+.upload-button:has(input:disabled) {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.profile-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.address-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 6px !important;
+}
+
+.address-heading span {
+  color: #84938d;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.field-hint {
+  margin: -8px 0 0;
+  color: #72847d;
+  font-size: 12px;
+}
+
+.profile-form .submit {
+  margin-top: 0;
 }
 
 .eyebrow {
@@ -192,5 +337,30 @@ footer {
 
   .card {
     padding: 25px 20px;
+  }
+
+  .profile-heading {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .avatar {
+    width: 58px;
+    height: 58px;
+    flex-basis: 58px;
+    font-size: 19px;
+  }
+
+  .profile-heading h1 {
+    font-size: 24px;
+  }
+
+  .picture-section {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
   }
 }
