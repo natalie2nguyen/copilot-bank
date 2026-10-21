@@ -1,4 +1,4 @@
-# Capstone Project: "Copilot Community Bank"
+# Capstone Project: "Copilot Bank"
 
 **Course:** VS Code with GitHub Copilot
 **Estimated effort:** 4–5 hours with Copilot

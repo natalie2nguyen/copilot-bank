@@ -106,7 +106,7 @@ function App() {
     <main className="page">
       <header className="brand">
         <span className="brand-mark" aria-hidden="true">C</span>
-        <span>Community Bank</span>
+        <span>Copilot Bank</span>
       </header>
 
       <section className="card" aria-labelledby="form-title">
@@ -117,7 +117,7 @@ function App() {
         <p className="intro">
           {mode === "register"
             ? "Create an account to get started."
-            : "Sign in to your Community Bank account."}
+            : "Sign in to your Copilot Bank account."}
         </p>
 
         <div className="mode-switch" aria-label="Account access">

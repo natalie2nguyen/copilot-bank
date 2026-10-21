@@ -32,6 +32,15 @@ On the profile page, manually check Story 2:
   appear in its place.
 - Sign out and sign in again to confirm the saved values are read back.
 
+The profile page also includes the Story 3 deposit form:
+
+- Submit `$0.01`, `$40.25`, and `$10,000.00` and check that the balance and
+  confirmation show the exact new amount.
+- Add an optional memo such as `Paycheck`; it should appear in the confirmation.
+- Try `$0.00`, a negative amount, `$10,000.01`, and an amount with more than
+  two decimal places. Each should show a validation error without changing the
+  balance.
+
 The API authenticates profile requests using the signed-in session. Its
 in-memory database is process-local and is cleared when the API restarts; it
 cannot be opened from an external SQLite viewer while using `:memory:`.

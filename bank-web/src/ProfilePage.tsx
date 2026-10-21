@@ -1,4 +1,5 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { formatCentsAsCurrency, parseDepositAmountToCents } from "./money";
 
 type Address = {
   street?: string;
@@ -13,6 +14,24 @@ type Profile = {
   email: string;
   address?: Address;
   avatarUrl?: string;
+};
+
+type BalanceResponse = {
+  balanceCents: number;
+  formattedBalance: string;
+};
+
+type DepositTransaction = {
+  type: "DEPOSIT";
+  amountCents: number;
+  timestamp: string;
+  resultingBalanceCents: number;
+  memo?: string;
+};
+
+type DepositResponse = {
+  newBalanceCents: number;
+  transaction: DepositTransaction;
 };
 
 type ProfileDraft = {
@@ -77,10 +96,16 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
   const [draft, setDraft] = useState<ProfileDraft | null>(null);
   const [avatarSource, setAvatarSource] = useState("");
   const [avatarRevision, setAvatarRevision] = useState(0);
+  const [balanceCents, setBalanceCents] = useState<number | null>(null);
+  const [depositAmount, setDepositAmount] = useState("");
+  const [depositMemo, setDepositMemo] = useState("");
+  const [depositTransaction, setDepositTransaction] =
+    useState<DepositTransaction | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isDepositing, setIsDepositing] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -88,16 +113,24 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
     async function loadProfile() {
       setError("");
       try {
-        const response = await fetch("/api/me", {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          throw new Error(await responseError(response));
+        const headers = { Authorization: `Bearer ${token}` };
+        const [profileResponse, balanceResponse] = await Promise.all([
+          fetch("/api/me", { headers, signal: controller.signal }),
+          fetch("/api/accounts/me/balance", { headers, signal: controller.signal }),
+        ]);
+        if (!profileResponse.ok) {
+          throw new Error(await responseError(profileResponse));
         }
-        const currentProfile = (await response.json()) as Profile;
+        if (!balanceResponse.ok) {
+          throw new Error(await responseError(balanceResponse));
+        }
+        const [currentProfile, balance] = await Promise.all([
+          profileResponse.json() as Promise<Profile>,
+          balanceResponse.json() as Promise<BalanceResponse>,
+        ]);
         setProfile(currentProfile);
         setDraft(draftFromProfile(currentProfile));
+        setBalanceCents(balance.balanceCents);
       } catch (caught) {
         if (caught instanceof Error && caught.name === "AbortError") return;
         setError(caught instanceof Error ? caught.message : "Could not load your profile.");
@@ -250,12 +283,53 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
     }
   }
 
+  async function submitDeposit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    setDepositTransaction(null);
+
+    let amountCents: number;
+    try {
+      amountCents = parseDepositAmountToCents(depositAmount);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Enter a valid deposit amount.");
+      return;
+    }
+
+    setIsDepositing(true);
+    try {
+      const response = await fetch("/api/accounts/me/deposits", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          amountCents,
+          ...(depositMemo.trim() ? { memo: depositMemo.trim() } : {}),
+        }),
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      const result = (await response.json()) as DepositResponse;
+      setBalanceCents(result.newBalanceCents);
+      setDepositTransaction(result.transaction);
+      setDepositAmount("");
+      setDepositMemo("");
+      setMessage(`Deposit complete. Your new balance is ${formatCentsAsCurrency(result.newBalanceCents)}.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not complete the deposit.");
+    } finally {
+      setIsDepositing(false);
+    }
+  }
+
   if (!profile || !draft) {
     return (
       <main className="page">
         <header className="brand">
           <span className="brand-mark" aria-hidden="true">C</span>
-          <span>Community Bank</span>
+          <span>Copilot Bank</span>
         </header>
         {error
           ? <p className="notice error" role="alert">{error}</p>
@@ -269,7 +343,7 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
     <main className="page profile-page">
       <header className="brand">
         <span className="brand-mark" aria-hidden="true">C</span>
-        <span>Community Bank</span>
+        <span>Copilot Bank</span>
         <button className="logout-button" onClick={onLogout} type="button">
           Sign out
         </button>
@@ -291,6 +365,75 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
 
         {error && <p className="notice error" role="alert">{error}</p>}
         {message && <p className="notice success" role="status">{message}</p>}
+
+        {balanceCents !== null && (
+          <section className="balance-panel" aria-label="Checking balance">
+            <span>Checking balance</span>
+            <strong>{formatCentsAsCurrency(balanceCents)}</strong>
+            <small>{balanceCents.toLocaleString("en-US")} cents</small>
+          </section>
+        )}
+
+        <section className="deposit-section" aria-labelledby="deposit-title">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">ADD FUNDS</p>
+              <h2 id="deposit-title">Make a deposit</h2>
+            </div>
+          </div>
+          <form className="deposit-form" onSubmit={(event) => void submitDeposit(event)}>
+            <label>
+              Amount
+              <input
+                aria-describedby="deposit-amount-hint"
+                autoComplete="off"
+                inputMode="decimal"
+                onChange={(event) => setDepositAmount(event.target.value)}
+                placeholder="0.00"
+                required
+                type="text"
+                value={depositAmount}
+              />
+            </label>
+            <p className="field-hint" id="deposit-amount-hint">
+              Enter $0.01 to $10,000.00, with up to two decimal places.
+            </p>
+            <label>
+              Memo <span className="optional-label">Optional</span>
+              <input
+                maxLength={500}
+                onChange={(event) => setDepositMemo(event.target.value)}
+                placeholder="e.g. Paycheck"
+                value={depositMemo}
+              />
+            </label>
+            <button className="submit" disabled={isDepositing} type="submit">
+              {isDepositing ? "Processing..." : "Deposit money"}
+            </button>
+          </form>
+          {depositTransaction && (
+            <div className="deposit-result" aria-label="Deposit confirmation">
+              <div>
+                <strong>Deposit successful</strong>
+                <span>{formatCentsAsCurrency(depositTransaction.amountCents)} added</span>
+              </div>
+              <div>
+                <strong>New balance</strong>
+                <span>{formatCentsAsCurrency(depositTransaction.resultingBalanceCents)}</span>
+              </div>
+              {depositTransaction.memo && (
+                <div>
+                  <strong>Memo</strong>
+                  <span>{depositTransaction.memo}</span>
+                </div>
+              )}
+              <div>
+                <strong>Recorded</strong>
+                <span>{new Date(depositTransaction.timestamp).toLocaleString()}</span>
+              </div>
+            </div>
+          )}
+        </section>
 
         <section className="picture-section" aria-labelledby="picture-title">
           <div>
