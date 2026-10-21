@@ -68,8 +68,10 @@ describe("borrow funds", () => {
     )).toBe(true);
     const transactions = await authorizedGet(transactionsPath, customer);
     expect(transactions.status).toBe(200);
-    expect(objectsIn(transactions.body).some(
+    const loanDraws = objectsIn(transactions.body).filter(
       (entry) => entry.type === "LOAN_DRAW",
-    )).toBe(false);
+    );
+    expect(loanDraws).toHaveLength(1);
+    expect(loanDraws[0].amountCents ?? loanDraws[0].amount).toBe(475_000);
   });
 });
