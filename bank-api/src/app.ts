@@ -2,6 +2,7 @@ import { randomInt, randomUUID, scryptSync, timingSafeEqual } from "node:crypto"
 import express, { type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
+import { db, withDatabaseTransaction } from "./database.js";
 
 const app = express();
 app.use(express.json());
@@ -28,6 +29,7 @@ type Transaction = {
 };
 
 type Customer = {
+  id: string;
   name: string;
   email: string;
   passwordSalt: string;
@@ -43,14 +45,18 @@ type Customer = {
     postalCode?: string;
     country?: string;
   };
+  hasAvatar: boolean;
   avatar?: {
     mimeType: "image/png" | "image/jpeg";
     buffer: Buffer;
   };
 };
 
-const customersByEmail = new Map<string, Customer>();
-const customersByToken = new Map<string, Customer>();
+type DatabaseRow = Record<
+  string,
+  string | number | bigint | Uint8Array | null
+>;
+
 const registrationSchema = z.object({
   name: z.string().trim().min(1),
   email: z.string().trim().email(),
@@ -94,6 +100,202 @@ const avatarUpload = multer({
   limits: { fileSize: 2 * 1024 * 1024 },
 });
 
+function requiredString(row: DatabaseRow, column: string): string {
+  const value = row[column];
+  if (typeof value !== "string") {
+    throw new Error(`Expected ${column} to contain a string.`);
+  }
+  return value;
+}
+
+function nullableString(row: DatabaseRow, column: string): string | undefined {
+  const value = row[column];
+  if (value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`Expected ${column} to contain a string or null.`);
+  }
+  return value;
+}
+
+function requiredNumber(row: DatabaseRow, column: string): number {
+  const value = row[column];
+  if (typeof value !== "number") {
+    throw new Error(`Expected ${column} to contain a number.`);
+  }
+  return value;
+}
+
+function requiredBuffer(row: DatabaseRow, column: string): Buffer {
+  const value = row[column];
+  if (!(value instanceof Uint8Array)) {
+    throw new Error(`Expected ${column} to contain binary data.`);
+  }
+  return Buffer.from(value);
+}
+
+function isTransactionType(value: string): value is TransactionType {
+  return [
+    "DEPOSIT",
+    "WITHDRAWAL",
+    "LOAN_DRAW",
+    "LOAN_PAYMENT",
+    "WIRE_IN",
+    "WIRE_OUT",
+  ].includes(value);
+}
+
+function transactionFromRow(row: DatabaseRow): Transaction {
+  const type = requiredString(row, "type");
+  if (!isTransactionType(type)) {
+    throw new Error("Database contains an unsupported transaction type.");
+  }
+
+  const transaction: Transaction = {
+    type,
+    amountCents: requiredNumber(row, "amount_cents"),
+    direction: requiredString(row, "direction"),
+    timestamp: requiredString(row, "timestamp"),
+    resultingBalanceCents: requiredNumber(row, "resulting_balance_cents"),
+  };
+  const memo = nullableString(row, "memo");
+  const wireId = nullableString(row, "wire_id");
+  if (memo !== undefined) transaction.memo = memo;
+  if (wireId !== undefined) transaction.wireId = wireId;
+  return transaction;
+}
+
+function customerFromRow(row: DatabaseRow): Customer {
+  const customer: Customer = {
+    id: requiredString(row, "id"),
+    name: requiredString(row, "name"),
+    email: requiredString(row, "email"),
+    passwordSalt: requiredString(row, "password_salt"),
+    passwordHash: requiredBuffer(row, "password_hash"),
+    accountNumber: requiredString(row, "account_number"),
+    balanceCents: requiredNumber(row, "balance_cents"),
+    loanBalanceCents: requiredNumber(row, "loan_balance_cents"),
+    transactions: [],
+    hasAvatar: requiredNumber(row, "has_avatar") === 1,
+  };
+  const address = {
+    street: nullableString(row, "street"),
+    city: nullableString(row, "city"),
+    state: nullableString(row, "state"),
+    postalCode: nullableString(row, "postal_code"),
+    country: nullableString(row, "country"),
+  };
+  if (Object.values(address).some((value) => value !== undefined)) {
+    customer.address = address;
+  }
+  customer.transactions = db.prepare(`
+    SELECT type, amount_cents, direction, timestamp,
+           resulting_balance_cents, memo, wire_id
+    FROM transactions
+    WHERE customer_id = ?
+    ORDER BY id DESC
+  `).all(customer.id).map((transactionRow) =>
+    transactionFromRow(transactionRow as DatabaseRow),
+  );
+  return customer;
+}
+
+const customerSelect = `
+  SELECT c.id, c.name, c.email, c.password_salt, c.password_hash,
+         c.street, c.city, c.state, c.postal_code, c.country,
+         a.account_number, a.balance_cents, a.loan_balance_cents,
+         EXISTS (
+           SELECT 1 FROM avatars WHERE customer_id = c.id
+         ) AS has_avatar
+  FROM customers AS c
+  JOIN accounts AS a ON a.customer_id = c.id
+`;
+
+function findCustomerById(id: string): Customer | undefined {
+  const row = db.prepare(`${customerSelect} WHERE c.id = ?`).get(id);
+  return row ? customerFromRow(row as DatabaseRow) : undefined;
+}
+
+function findCustomerByEmail(email: string): Customer | undefined {
+  const row = db.prepare(`${customerSelect} WHERE c.email = ?`).get(email);
+  return row ? customerFromRow(row as DatabaseRow) : undefined;
+}
+
+function findCustomerByAccountNumber(accountNumber: string): Customer | undefined {
+  const row = db.prepare(`${customerSelect} WHERE a.account_number = ?`)
+    .get(accountNumber);
+  return row ? customerFromRow(row as DatabaseRow) : undefined;
+}
+
+function findCustomerByToken(token: string): Customer | undefined {
+  const session = db.prepare(
+    "SELECT customer_id FROM sessions WHERE token = ?",
+  ).get(token) as DatabaseRow | undefined;
+  if (!session) return undefined;
+  return findCustomerById(requiredString(session, "customer_id"));
+}
+
+function persistCustomer(customer: Customer): void {
+  db.prepare(`
+    UPDATE customers
+    SET name = ?, email = ?, password_salt = ?, password_hash = ?,
+        street = ?, city = ?, state = ?, postal_code = ?, country = ?
+    WHERE id = ?
+  `).run(
+    customer.name,
+    customer.email,
+    customer.passwordSalt,
+    customer.passwordHash,
+    customer.address?.street ?? null,
+    customer.address?.city ?? null,
+    customer.address?.state ?? null,
+    customer.address?.postalCode ?? null,
+    customer.address?.country ?? null,
+    customer.id,
+  );
+  db.prepare(`
+    UPDATE accounts
+    SET account_number = ?, balance_cents = ?, loan_balance_cents = ?
+    WHERE customer_id = ?
+  `).run(
+    customer.accountNumber,
+    customer.balanceCents,
+    customer.loanBalanceCents,
+    customer.id,
+  );
+}
+
+function insertTransaction(customer: Customer, transaction: Transaction): void {
+  db.prepare(`
+    INSERT INTO transactions (
+      customer_id, type, amount_cents, direction, timestamp,
+      resulting_balance_cents, memo, wire_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    customer.id,
+    transaction.type,
+    transaction.amountCents,
+    transaction.direction,
+    transaction.timestamp,
+    transaction.resultingBalanceCents,
+    transaction.memo ?? null,
+    transaction.wireId ?? null,
+  );
+}
+
+function saveAvatar(
+  customerId: string,
+  mimeType: "image/png" | "image/jpeg",
+  data: Buffer,
+): void {
+  db.prepare(`
+    INSERT INTO avatars (customer_id, mime_type, data)
+    VALUES (?, ?, ?)
+    ON CONFLICT(customer_id) DO UPDATE SET
+      mime_type = excluded.mime_type,
+      data = excluded.data
+  `).run(customerId, mimeType, data);
+}
+
 function sendError(
   response: Response,
   status: number,
@@ -105,7 +307,7 @@ function sendError(
 
 function getAuthenticatedCustomer(request: Request, response: Response): Customer | undefined {
   const token = request.header("Authorization")?.match(/^Bearer (.+)$/)?.[1];
-  const customer = token ? customersByToken.get(token) : undefined;
+  const customer = token ? findCustomerByToken(token) : undefined;
   if (!customer) {
     sendError(response, 401, "UNAUTHORIZED", "Authentication is required.");
     return undefined;
@@ -125,7 +327,7 @@ function profileResponse(customer: Customer): Record<string, unknown> {
     name: customer.name,
     email: customer.email,
     ...(customer.address ? { address: customer.address } : {}),
-    ...(customer.avatar ? { avatarUrl: "/api/me/avatar" } : {}),
+    ...(customer.hasAvatar ? { avatarUrl: "/api/me/avatar" } : {}),
   };
 }
 
@@ -153,6 +355,7 @@ function makeTransaction(
   if (wireId !== undefined) {
     transaction.wireId = wireId;
   }
+  insertTransaction(customer, transaction);
   customer.transactions.unshift(transaction);
   return transaction;
 }
@@ -166,7 +369,7 @@ app.post("/api/auth/register", (request, response) => {
 
   const { name, email, password } = parsed.data;
   const normalizedEmail = email.toLowerCase();
-  if (customersByEmail.has(normalizedEmail)) {
+  if (findCustomerByEmail(normalizedEmail)) {
     sendError(response, 409, "EMAIL_ALREADY_EXISTS", "An account with this email already exists.");
     return;
   }
@@ -174,12 +377,11 @@ app.post("/api/auth/register", (request, response) => {
   let accountNumber: string;
   do {
     accountNumber = String(randomInt(1_000_000_000, 10_000_000_000));
-  } while ([...customersByEmail.values()].some(
-    (customer) => customer.accountNumber === accountNumber,
-  ));
+  } while (findCustomerByAccountNumber(accountNumber));
 
   const passwordSalt = randomUUID();
   const customer: Customer = {
+    id: randomUUID(),
     name,
     email: normalizedEmail,
     passwordSalt,
@@ -188,8 +390,25 @@ app.post("/api/auth/register", (request, response) => {
     balanceCents: 0,
     loanBalanceCents: 0,
     transactions: [],
+    hasAvatar: false,
   };
-  customersByEmail.set(normalizedEmail, customer);
+  withDatabaseTransaction(() => {
+    db.prepare(`
+      INSERT INTO customers (
+        id, name, email, password_salt, password_hash
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      customer.id,
+      customer.name,
+      customer.email,
+      customer.passwordSalt,
+      customer.passwordHash,
+    );
+    db.prepare(`
+      INSERT INTO accounts (customer_id, account_number, balance_cents)
+      VALUES (?, ?, ?)
+    `).run(customer.id, customer.accountNumber, customer.balanceCents);
+  });
 
   response.status(201).json({
     profile: { name, email: normalizedEmail },
@@ -208,7 +427,7 @@ app.post("/api/auth/login", (request, response) => {
     return;
   }
 
-  const customer = customersByEmail.get(parsed.data.email.toLowerCase());
+  const customer = findCustomerByEmail(parsed.data.email.toLowerCase());
   const candidateHash = scryptSync(
     parsed.data.password,
     customer?.passwordSalt ?? "invalid-login-salt",
@@ -223,7 +442,8 @@ app.post("/api/auth/login", (request, response) => {
   }
 
   const token = randomUUID();
-  customersByToken.set(token, customer);
+  db.prepare("INSERT INTO sessions (token, customer_id) VALUES (?, ?)")
+    .run(token, customer.id);
   response.json({ token });
 });
 
@@ -247,16 +467,14 @@ app.patch("/api/me", (request, response) => {
   if (
     updatedEmail &&
     updatedEmail !== customer.email &&
-    customersByEmail.has(updatedEmail)
+    findCustomerByEmail(updatedEmail)
   ) {
     sendError(response, 409, "EMAIL_ALREADY_EXISTS", "An account with this email already exists.");
     return;
   }
 
   if (updatedEmail && updatedEmail !== customer.email) {
-    customersByEmail.delete(customer.email);
     customer.email = updatedEmail;
-    customersByEmail.set(updatedEmail, customer);
   }
   if (parsed.data.name !== undefined) {
     customer.name = parsed.data.name;
@@ -268,6 +486,7 @@ app.patch("/api/me", (request, response) => {
     };
   }
 
+  persistCustomer(customer);
   response.json(profileResponse(customer));
 });
 
@@ -301,22 +520,33 @@ app.put("/api/me/avatar", (request, response, next) => {
     mimeType: request.file.mimetype,
     buffer: request.file.buffer,
   };
+  saveAvatar(customer.id, customer.avatar.mimeType, customer.avatar.buffer);
+  customer.hasAvatar = true;
   response.status(201).json(profileResponse(customer));
 });
 
 app.get("/api/me/avatar", (request, response) => {
   const customer = getAuthenticatedCustomer(request, response);
   if (!customer) return;
-  if (!customer.avatar) {
+  const avatar = db.prepare(
+    "SELECT mime_type, data FROM avatars WHERE customer_id = ?",
+  ).get(customer.id) as DatabaseRow | undefined;
+  if (!avatar) {
     sendError(response, 404, "AVATAR_NOT_FOUND", "No profile picture is available.");
     return;
   }
-  response.type(customer.avatar.mimeType).send(customer.avatar.buffer);
+  const mimeType = requiredString(avatar, "mime_type");
+  if (mimeType !== "image/png" && mimeType !== "image/jpeg") {
+    throw new Error("Database contains an unsupported avatar type.");
+  }
+  response.type(mimeType).send(requiredBuffer(avatar, "data"));
 });
 
 app.delete("/api/me/avatar", (request, response) => {
   const customer = getAuthenticatedCustomer(request, response);
   if (!customer) return;
+  db.prepare("DELETE FROM avatars WHERE customer_id = ?").run(customer.id);
+  customer.hasAvatar = false;
   delete customer.avatar;
   response.status(204).end();
 });
@@ -331,13 +561,17 @@ app.post("/api/accounts/me/deposits", (request, response) => {
     return;
   }
 
-  customer.balanceCents += parsed.data.amountCents;
-  const transaction = makeTransaction(
-    customer,
-    "DEPOSIT",
-    parsed.data.amountCents,
-    parsed.data.memo,
-  );
+  const transaction = withDatabaseTransaction(() => {
+    customer.balanceCents += parsed.data.amountCents;
+    const createdTransaction = makeTransaction(
+      customer,
+      "DEPOSIT",
+      parsed.data.amountCents,
+      parsed.data.memo,
+    );
+    persistCustomer(customer);
+    return createdTransaction;
+  });
   response.status(201).json({
     newBalanceCents: customer.balanceCents,
     balanceCents: customer.balanceCents,
@@ -359,13 +593,17 @@ app.post("/api/accounts/me/withdrawals", (request, response) => {
     return;
   }
 
-  customer.balanceCents -= parsed.data.amountCents;
-  const transaction = makeTransaction(
-    customer,
-    "WITHDRAWAL",
-    parsed.data.amountCents,
-    parsed.data.memo,
-  );
+  const transaction = withDatabaseTransaction(() => {
+    customer.balanceCents -= parsed.data.amountCents;
+    const createdTransaction = makeTransaction(
+      customer,
+      "WITHDRAWAL",
+      parsed.data.amountCents,
+      parsed.data.memo,
+    );
+    persistCustomer(customer);
+    return createdTransaction;
+  });
   response.status(201).json({
     newBalanceCents: customer.balanceCents,
     balanceCents: customer.balanceCents,
@@ -387,13 +625,17 @@ app.post("/api/loans/draws", (request, response) => {
     return;
   }
 
-  customer.balanceCents += parsed.data.amountCents;
-  customer.loanBalanceCents += parsed.data.amountCents;
-  const transaction = makeTransaction(
-    customer,
-    "LOAN_DRAW",
-    parsed.data.amountCents,
-  );
+  const transaction = withDatabaseTransaction(() => {
+    customer.balanceCents += parsed.data.amountCents;
+    customer.loanBalanceCents += parsed.data.amountCents;
+    const createdTransaction = makeTransaction(
+      customer,
+      "LOAN_DRAW",
+      parsed.data.amountCents,
+    );
+    persistCustomer(customer);
+    return createdTransaction;
+  });
   response.status(201).json({
     balanceCents: customer.balanceCents,
     loanBalanceCents: customer.loanBalanceCents,
@@ -423,13 +665,17 @@ app.post("/api/loans/payments", (request, response) => {
     return;
   }
 
-  customer.balanceCents -= parsed.data.amountCents;
-  customer.loanBalanceCents -= parsed.data.amountCents;
-  const transaction = makeTransaction(
-    customer,
-    "LOAN_PAYMENT",
-    parsed.data.amountCents,
-  );
+  const transaction = withDatabaseTransaction(() => {
+    customer.balanceCents -= parsed.data.amountCents;
+    customer.loanBalanceCents -= parsed.data.amountCents;
+    const createdTransaction = makeTransaction(
+      customer,
+      "LOAN_PAYMENT",
+      parsed.data.amountCents,
+    );
+    persistCustomer(customer);
+    return createdTransaction;
+  });
   response.status(201).json({
     balanceCents: customer.balanceCents,
     loanBalanceCents: customer.loanBalanceCents,
@@ -450,35 +696,41 @@ app.post("/api/wires", (request, response) => {
     sendError(response, 422, "INSUFFICIENT_FUNDS", "Balance is too low for this wire.");
     return;
   }
-  const recipient = [...customersByEmail.values()].find(
-    (customer) => customer.accountNumber === parsed.data.recipientAccountNumber,
-  );
+  const recipient = findCustomerByAccountNumber(parsed.data.recipientAccountNumber);
   if (!recipient) {
     sendError(response, 404, "RECIPIENT_NOT_FOUND", "The recipient account was not found.");
     return;
   }
-  if (recipient === sender) {
+  if (recipient.id === sender.id) {
     sendError(response, 400, "INVALID_RECIPIENT", "You cannot send a wire to your own account.");
     return;
   }
 
   const wireId = randomUUID();
-  sender.balanceCents -= parsed.data.amountCents;
-  recipient.balanceCents += parsed.data.amountCents;
-  const outgoingTransaction = makeTransaction(
-    sender,
-    "WIRE_OUT",
-    parsed.data.amountCents,
-    parsed.data.memo,
-    wireId,
-  );
-  const incomingTransaction = makeTransaction(
-    recipient,
-    "WIRE_IN",
-    parsed.data.amountCents,
-    parsed.data.memo,
-    wireId,
-  );
+  const { outgoingTransaction, incomingTransaction } = withDatabaseTransaction(() => {
+    sender.balanceCents -= parsed.data.amountCents;
+    recipient.balanceCents += parsed.data.amountCents;
+    const outgoing = makeTransaction(
+      sender,
+      "WIRE_OUT",
+      parsed.data.amountCents,
+      parsed.data.memo,
+      wireId,
+    );
+    const incoming = makeTransaction(
+      recipient,
+      "WIRE_IN",
+      parsed.data.amountCents,
+      parsed.data.memo,
+      wireId,
+    );
+    persistCustomer(sender);
+    persistCustomer(recipient);
+    return {
+      outgoingTransaction: outgoing,
+      incomingTransaction: incoming,
+    };
+  });
   response.status(201).json({
     wireId,
     balanceCents: sender.balanceCents,

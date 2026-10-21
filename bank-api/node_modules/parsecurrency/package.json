@@ -1,0 +1,32 @@
+{
+  "name": "parsecurrency",
+  "version": "1.1.1",
+  "description": "Tiny currency string parser utility",
+  "main": "index.js",
+  "scripts": {
+    "lint": "eslint *.js",
+    "test": "mocha test.js",
+    "pretest": "npm run lint"
+  },
+  "author": "Michal Kot",
+  "license": "MIT",
+  "keywords": [
+    "money",
+    "currency",
+    "format",
+    "utility",
+    "finance",
+    "parse",
+    "unformat"
+  ],
+  "files": [
+    "index.js"
+  ],
+  "devDependencies": {
+    "chai": "^4.2.0",
+    "eslint": "^8.2.0",
+    "mocha": "^10.1.0"
+  },
+  "dependencies": {},
+  "repository": "mktj/parsecurrency"
+}
