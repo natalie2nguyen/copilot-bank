@@ -2,6 +2,8 @@ import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import {
   formatCentsAsCurrency,
   parseDepositAmountToCents,
+  parseLoanAmountToCents,
+  parseLoanPaymentAmountToCents,
   parseWithdrawalAmountToCents,
 } from "./money";
 
@@ -25,6 +27,14 @@ type BalanceResponse = {
   formattedBalance: string;
 };
 
+type LoanBalance = {
+  loanBalanceCents: number;
+  creditLimitCents: number;
+  availableCreditCents: number;
+};
+
+type LoanBalanceResponse = LoanBalance;
+
 type DepositTransaction = {
   type: "DEPOSIT";
   amountCents: number;
@@ -47,6 +57,32 @@ type WithdrawalResponse = {
   transaction: WithdrawalTransaction;
 };
 
+type LoanDrawTransaction = {
+  type: "LOAN_DRAW";
+  amountCents: number;
+  timestamp: string;
+  resultingBalanceCents: number;
+};
+
+type LoanDrawResponse = {
+  balanceCents: number;
+  loanBalanceCents: number;
+  transaction: LoanDrawTransaction;
+};
+
+type LoanPaymentTransaction = {
+  type: "LOAN_PAYMENT";
+  amountCents: number;
+  timestamp: string;
+  resultingBalanceCents: number;
+};
+
+type LoanPaymentResponse = {
+  balanceCents: number;
+  loanBalanceCents: number;
+  transaction: LoanPaymentTransaction;
+};
+
 type ProfileDraft = {
   name: string;
   email: string;
@@ -57,12 +93,22 @@ type ProfileDraft = {
   country: string;
 };
 
+type ProfileChanges = {
+  name?: string;
+  email?: string;
+  address?: Address;
+};
+
 type ApiErrorBody = {
   error?: { code?: string; message?: string };
 };
 
 const invalidTransactionMessage =
   "The transaction is invalid. Enter an amount from $0.01 to $10,000.00 with no more than two decimal places.";
+const invalidBorrowMessage =
+  "Enter a positive amount with no more than two decimal places.";
+const invalidPaymentMessage =
+  "Enter a positive payment with no more than two decimal places.";
 
 const addressFields: Array<keyof Address> = [
   "street",
@@ -100,6 +146,28 @@ function draftFromProfile(profile: Profile): ProfileDraft {
   };
 }
 
+function getProfileChanges(
+  profile: Profile,
+  draft: ProfileDraft,
+): ProfileChanges {
+  const changes: ProfileChanges = {};
+  if (draft.name !== profile.name) changes.name = draft.name;
+  if (draft.email !== profile.email) changes.email = draft.email;
+
+  const addressChanges: Address = {};
+  for (const field of addressFields) {
+    const value = draft[field];
+    if (value === (profile.address?.[field] ?? "")) continue;
+    if (value !== "" || field === "postalCode") {
+      addressChanges[field] = value;
+    }
+  }
+  if (Object.keys(addressChanges).length > 0) {
+    changes.address = addressChanges;
+  }
+  return changes;
+}
+
 function initials(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return "?";
@@ -119,6 +187,7 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
   const [avatarSource, setAvatarSource] = useState("");
   const [avatarRevision, setAvatarRevision] = useState(0);
   const [balanceCents, setBalanceCents] = useState<number | null>(null);
+  const [loanBalance, setLoanBalance] = useState<LoanBalance | null>(null);
   const [depositAmount, setDepositAmount] = useState("");
   const [depositMemo, setDepositMemo] = useState("");
   const [depositError, setDepositError] = useState("");
@@ -129,12 +198,22 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
   const [withdrawalError, setWithdrawalError] = useState("");
   const [withdrawalTransaction, setWithdrawalTransaction] =
     useState<WithdrawalTransaction | null>(null);
+  const [borrowAmount, setBorrowAmount] = useState("");
+  const [borrowError, setBorrowError] = useState("");
+  const [borrowTransaction, setBorrowTransaction] =
+    useState<LoanDrawTransaction | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentError, setPaymentError] = useState("");
+  const [paymentTransaction, setPaymentTransaction] =
+    useState<LoanPaymentTransaction | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isDepositing, setIsDepositing] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
+  const [isBorrowing, setIsBorrowing] = useState(false);
+  const [isPaying, setIsPaying] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -143,9 +222,10 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
       setError("");
       try {
         const headers = { Authorization: `Bearer ${token}` };
-        const [profileResponse, balanceResponse] = await Promise.all([
+        const [profileResponse, balanceResponse, loanBalanceResponse] = await Promise.all([
           fetch("/api/me", { headers, signal: controller.signal }),
           fetch("/api/accounts/me/balance", { headers, signal: controller.signal }),
+          fetch("/api/loans/balance", { headers, signal: controller.signal }),
         ]);
         if (!profileResponse.ok) {
           throw new Error(await responseError(profileResponse));
@@ -153,13 +233,18 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
         if (!balanceResponse.ok) {
           throw new Error(await responseError(balanceResponse));
         }
-        const [currentProfile, balance] = await Promise.all([
+        if (!loanBalanceResponse.ok) {
+          throw new Error(await responseError(loanBalanceResponse));
+        }
+        const [currentProfile, balance, currentLoanBalance] = await Promise.all([
           profileResponse.json() as Promise<Profile>,
           balanceResponse.json() as Promise<BalanceResponse>,
+          loanBalanceResponse.json() as Promise<LoanBalanceResponse>,
         ]);
         setProfile(currentProfile);
         setDraft(draftFromProfile(currentProfile));
         setBalanceCents(balance.balanceCents);
+        setLoanBalance(currentLoanBalance);
       } catch (caught) {
         if (caught instanceof Error && caught.name === "AbortError") return;
         setError(caught instanceof Error ? caught.message : "Could not load your profile.");
@@ -213,25 +298,7 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
     event.preventDefault();
     if (!profile || !draft) return;
 
-    const changes: {
-      name?: string;
-      email?: string;
-      address?: Address;
-    } = {};
-    if (draft.name !== profile.name) changes.name = draft.name;
-    if (draft.email !== profile.email) changes.email = draft.email;
-
-    const addressChanges: Address = {};
-    for (const field of addressFields) {
-      const value = draft[field];
-      if (value === (profile.address?.[field] ?? "")) continue;
-      if (value !== "" || field === "postalCode") {
-        addressChanges[field] = value;
-      }
-    }
-    if (Object.keys(addressChanges).length > 0) {
-      changes.address = addressChanges;
-    }
+    const changes = getProfileChanges(profile, draft);
 
     if (Object.keys(changes).length === 0) {
       setMessage("There are no profile changes to save.");
@@ -412,6 +479,126 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
     }
   }
 
+  async function submitBorrow(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    setBorrowError("");
+    setBorrowTransaction(null);
+
+    let amountCents: number;
+    try {
+      amountCents = parseLoanAmountToCents(borrowAmount);
+    } catch {
+      setBorrowError(invalidBorrowMessage);
+      return;
+    }
+
+    setIsBorrowing(true);
+    try {
+      const response = await fetch("/api/loans/draws", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ amountCents }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseError(response, {
+          CREDIT_LIMIT_EXCEEDED:
+            "Credit limit exceeded (CREDIT_LIMIT_EXCEEDED). Reduce the amount and try again.",
+          INVALID_AMOUNT: invalidBorrowMessage,
+        }));
+      }
+      const result = (await response.json()) as LoanDrawResponse;
+      setBalanceCents(result.balanceCents);
+      setLoanBalance((current) => current
+        ? {
+            ...current,
+            loanBalanceCents: result.loanBalanceCents,
+            availableCreditCents: current.creditLimitCents - result.loanBalanceCents,
+          }
+        : current);
+      setBorrowTransaction(result.transaction);
+      setBorrowAmount("");
+      setMessage(
+        `Borrow complete. Your checking balance is ${formatCentsAsCurrency(result.balanceCents)}.`,
+      );
+    } catch (caught) {
+      setBorrowError(
+        caught instanceof Error ? caught.message : "Could not complete the borrow.",
+      );
+    } finally {
+      setIsBorrowing(false);
+    }
+  }
+
+  async function submitLoanPayment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    setPaymentError("");
+    setPaymentTransaction(null);
+
+    let amountCents: number;
+    try {
+      amountCents = parseLoanPaymentAmountToCents(paymentAmount);
+    } catch {
+      setPaymentError(invalidPaymentMessage);
+      return;
+    }
+
+    setIsPaying(true);
+    try {
+      const response = await fetch("/api/loans/payments", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ amountCents }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseError(response, {
+          OVERPAYMENT:
+            "Payment exceeds the outstanding loan balance (OVERPAYMENT).",
+          INSUFFICIENT_FUNDS:
+            "Checking balance is too low for this payment (INSUFFICIENT_FUNDS).",
+          NO_OUTSTANDING_LOAN:
+            "There is no outstanding loan to pay (NO_OUTSTANDING_LOAN).",
+          INVALID_AMOUNT: invalidPaymentMessage,
+        }));
+      }
+      const result = (await response.json()) as LoanPaymentResponse;
+      setBalanceCents(result.balanceCents);
+      setLoanBalance((current) => current
+        ? {
+            ...current,
+            loanBalanceCents: result.loanBalanceCents,
+            availableCreditCents: current.creditLimitCents - result.loanBalanceCents,
+          }
+        : current);
+      setPaymentTransaction(result.transaction);
+      setPaymentAmount("");
+      setMessage("Loan payment complete.");
+    } catch (caught) {
+      setPaymentError(
+        caught instanceof Error ? caught.message : "Could not complete the loan payment.",
+      );
+    } finally {
+      setIsPaying(false);
+    }
+  }
+
+  function setFullPaymentAmount() {
+    if (!loanBalance || loanBalance.loanBalanceCents === 0) return;
+    setPaymentAmount(formatCentsAsCurrency(loanBalance.loanBalanceCents));
+    setPaymentError("");
+    setPaymentTransaction(null);
+    setMessage("");
+  }
+
   if (!profile || !draft) {
     return (
       <main className="page">
@@ -459,6 +646,22 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
             <span>Checking balance</span>
             <strong>{formatCentsAsCurrency(balanceCents)}</strong>
             <small>{balanceCents.toLocaleString("en-US")} cents</small>
+          </section>
+        )}
+        {loanBalance && (
+          <section className="loan-balance-panel" aria-label="Loan balance and available credit">
+            <div>
+              <span>Loan balance</span>
+              <strong>{formatCentsAsCurrency(loanBalance.loanBalanceCents)}</strong>
+            </div>
+            <div>
+              <span>Credit limit</span>
+              <strong>{formatCentsAsCurrency(loanBalance.creditLimitCents)}</strong>
+            </div>
+            <div>
+              <span>Available credit</span>
+              <strong>{formatCentsAsCurrency(loanBalance.availableCreditCents)}</strong>
+            </div>
           </section>
         )}
 
@@ -608,6 +811,164 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
           )}
         </section>
 
+        <section className="borrow-section" aria-labelledby="borrow-title">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">CREDIT LINE</p>
+              <h2 id="borrow-title">Borrow funds</h2>
+            </div>
+          </div>
+          <form className="borrow-form" onSubmit={(event) => void submitBorrow(event)}>
+            <label>
+              Amount
+              <input
+                aria-describedby={`borrow-amount-hint${borrowError ? " borrow-amount-error" : ""}`}
+                autoComplete="off"
+                inputMode="decimal"
+                onChange={(event) => {
+                  setBorrowAmount(event.target.value);
+                  setBorrowError("");
+                }}
+                placeholder="0.00"
+                required
+                type="text"
+                value={borrowAmount}
+              />
+            </label>
+            {borrowError && (
+              <p className="field-error" id="borrow-amount-error" role="alert">
+                {borrowError}
+              </p>
+            )}
+            <p className="field-hint" id="borrow-amount-hint">
+              Available credit:{" "}
+              {loanBalance
+                ? formatCentsAsCurrency(loanBalance.availableCreditCents)
+                : "Loading..."}
+              . Enter a positive amount with up to two decimal places.
+            </p>
+            <button
+              className="submit"
+              disabled={isBorrowing || !borrowAmount.trim()}
+              type="submit"
+            >
+              {isBorrowing ? "Processing..." : "Borrow funds"}
+            </button>
+          </form>
+          {borrowTransaction && (
+            <div className="borrow-result" aria-label="Borrow confirmation">
+              <div>
+                <strong>Borrow successful</strong>
+                <span>{formatCentsAsCurrency(borrowTransaction.amountCents)} added to checking</span>
+              </div>
+              <div>
+                <strong>Loan balance</strong>
+                <span>
+                  {loanBalance
+                    ? formatCentsAsCurrency(loanBalance.loanBalanceCents)
+                    : ""}
+                </span>
+              </div>
+              <div>
+                <strong>Transaction</strong>
+                <span>LOAN_DRAW</span>
+              </div>
+              <div>
+                <strong>Recorded</strong>
+                <span>{new Date(borrowTransaction.timestamp).toLocaleString()}</span>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="payment-section" aria-labelledby="payment-title">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">REDUCE YOUR BALANCE</p>
+              <h2 id="payment-title">Pay back funds</h2>
+            </div>
+          </div>
+          <form className="payment-form" onSubmit={(event) => void submitLoanPayment(event)}>
+            <label>
+              Amount
+              <input
+                aria-describedby={`payment-amount-hint${paymentError ? " payment-amount-error" : ""}`}
+                autoComplete="off"
+                inputMode="decimal"
+                onChange={(event) => {
+                  setPaymentAmount(event.target.value);
+                  setPaymentError("");
+                }}
+                placeholder="0.00"
+                required
+                type="text"
+                value={paymentAmount}
+              />
+            </label>
+            {paymentError && (
+              <p className="field-error" id="payment-amount-error" role="alert">
+                {paymentError}
+              </p>
+            )}
+            <p className="field-hint" id="payment-amount-hint">
+              Loan balance:{" "}
+              {loanBalance
+                ? formatCentsAsCurrency(loanBalance.loanBalanceCents)
+                : "Loading..."}
+              . Checking balance:{" "}
+              {balanceCents === null
+                ? "Loading..."
+                : formatCentsAsCurrency(balanceCents)}
+              .
+            </p>
+            <div className="payment-actions">
+              <button
+                className="secondary-button"
+                disabled={isPaying || !loanBalance || loanBalance.loanBalanceCents === 0}
+                onClick={setFullPaymentAmount}
+                type="button"
+              >
+                Pay full balance
+              </button>
+              <button
+                className="submit"
+                disabled={isPaying || !paymentAmount.trim()}
+                type="submit"
+              >
+                {isPaying ? "Processing..." : "Make loan payment"}
+              </button>
+            </div>
+          </form>
+          {paymentTransaction && (
+            <div className="payment-result" aria-label="Loan payment confirmation">
+              <div>
+                <strong>Payment successful</strong>
+                <span>{formatCentsAsCurrency(paymentTransaction.amountCents)} paid</span>
+              </div>
+              <div>
+                <strong>Checking balance</strong>
+                <span>{formatCentsAsCurrency(paymentTransaction.resultingBalanceCents)}</span>
+              </div>
+              <div>
+                <strong>Loan balance</strong>
+                <span>
+                  {loanBalance
+                    ? formatCentsAsCurrency(loanBalance.loanBalanceCents)
+                    : ""}
+                </span>
+              </div>
+              <div>
+                <strong>Transaction</strong>
+                <span>LOAN_PAYMENT</span>
+              </div>
+              <div>
+                <strong>Recorded</strong>
+                <span>{new Date(paymentTransaction.timestamp).toLocaleString()}</span>
+              </div>
+            </div>
+          )}
+        </section>
+
         <section className="picture-section" aria-labelledby="picture-title">
           <div>
             <h2 id="picture-title">Profile picture</h2>
@@ -701,7 +1062,16 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
           <p className="field-hint">
             Address fields are optional. A postal code must contain a value if you change it.
           </p>
-          <button className="submit" disabled={isSaving} type="submit">
+          <button
+            className="submit"
+            disabled={
+              isSaving ||
+              !profile ||
+              !draft ||
+              Object.keys(getProfileChanges(profile, draft)).length === 0
+            }
+            type="submit"
+          >
             {isSaving ? "Saving..." : "Save changes"}
           </button>
         </form>

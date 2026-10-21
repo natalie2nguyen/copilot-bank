@@ -51,6 +51,38 @@ The same page includes the Story 4 withdrawal form:
 - Try withdrawing more than the checking balance. The API's insufficient-funds
   error should appear, and the displayed balance should remain unchanged.
 
+The profile page also supports Story 5 borrowing:
+
+- Check that the loan balance starts at `$0.00`, the credit limit is `$5,000.00`,
+  and available credit is `$5,000.00`.
+- Borrow `$250.00`. Confirm checking increases by `$250.00`, loan balance
+  increases by `$250.00`, available credit decreases by `$250.00`, and a
+  `LOAN_DRAW` confirmation appears.
+- On a fresh account, borrow `$4,750.00`, then `$250.00` to use the remaining
+  credit. The second borrow should succeed and available credit should be
+  `$0.00`.
+- On a fresh account, borrow `$4,750.00`, then try `$250.01`. The form should
+  show `CREDIT_LIMIT_EXCEEDED`; checking balance, loan balance, and available
+  credit should remain unchanged.
+
+The profile page also supports Story 6 loan payments:
+
+- Ensure the account has at least `$500.00` in checking and `$300.00` in loan
+  balance (for example, deposit `$200.00`, then borrow `$300.00`). Pay `$100.00`.
+  Confirm checking and loan balance each decrease by `$100.00`, available credit
+  increases by `$100.00`, and a `LOAN_PAYMENT` confirmation appears.
+- Select **Pay full balance** and verify the amount field is set to the current
+  loan balance. Submit and confirm the loan reaches `$0.00`.
+- To test `OVERPAYMENT`, ensure checking is greater than the loan balance, then
+  enter an amount one cent above the loan balance. The error should appear below
+  the amount field and neither balance should change.
+- To test `INSUFFICIENT_FUNDS`, ensure checking is lower than the loan balance,
+  then enter an amount one cent above checking but no greater than the loan.
+  The error should appear and neither balance should change.
+- With no outstanding loan, enter `$0.01` and submit to verify
+  `NO_OUTSTANDING_LOAN` appears without a balance change. The full-balance
+  shortcut is disabled when there is no loan to repay.
+
 The API authenticates profile requests using the signed-in session. Its
 in-memory database is process-local and is cleared when the API restarts; it
 cannot be opened from an external SQLite viewer while using `:memory:`.
