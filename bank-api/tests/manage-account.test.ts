@@ -92,6 +92,7 @@ describe("manage account profile", () => {
     expect(response.status).toBe(200);
     expect(valuesIn(response.body)).toContain(customer.name);
     expect(valuesIn(response.body)).toContain(customer.email);
+    expect(response.body.accountNumber).toMatch(/^\d{10}$/);
   });
 
   it("updates the customer's name (02-manage-account.feature: Update my name)", async () => {

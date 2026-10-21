@@ -34,6 +34,10 @@ export function parseWithdrawalAmountToCents(input: string): number {
   return parseTransactionAmountToCents(input, "Withdrawal");
 }
 
+export function parseWireAmountToCents(input: string): number {
+  return parseTransactionAmountToCents(input, "Wire");
+}
+
 export function parseLoanAmountToCents(input: string): number {
   return parsePositiveAmountToCents(input, "Borrow");
 }

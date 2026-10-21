@@ -4,6 +4,7 @@ import {
   parseLoanAmountToCents,
   parseLoanPaymentAmountToCents,
   parseWithdrawalAmountToCents,
+  parseWireAmountToCents,
 } from "./money";
 
 describe("parseDepositAmountToCents", () => {
@@ -23,6 +24,23 @@ describe("parseDepositAmountToCents", () => {
       ["$10,000.00", 1_000_000],
     ] as const)("converts %s to %i cents", (input, expectedCents) => {
       expect(parseWithdrawalAmountToCents(input)).toBe(expectedCents);
+    });
+
+    describe("parseWireAmountToCents", () => {
+      it.each([
+        ["0.01", 1],
+        ["$75.25", 7_525],
+        ["$10,000.00", 1_000_000],
+      ] as const)("converts %s to %i cents", (input, expectedCents) => {
+        expect(parseWireAmountToCents(input)).toBe(expectedCents);
+      });
+
+      it.each(["0.00", "-0.01", "$10,000.01", "1.234", "1,23.45", ""])(
+        "rejects invalid wire amount %s",
+        (input) => {
+          expect(() => parseWireAmountToCents(input)).toThrow();
+        },
+      );
     });
 
     it.each([

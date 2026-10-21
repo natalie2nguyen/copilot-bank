@@ -338,6 +338,7 @@ function profileResponse(customer: Customer): Record<string, unknown> {
   return {
     name: customer.name,
     email: customer.email,
+    accountNumber: customer.accountNumber,
     ...(customer.address ? { address: customer.address } : {}),
     ...(customer.hasAvatar ? { avatarUrl: "/api/me/avatar" } : {}),
   };

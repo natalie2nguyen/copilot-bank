@@ -207,6 +207,26 @@
   font-size: 11px;
 }
 
+.account-number {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid #dcebe4;
+}
+
+.account-number strong {
+  color: #23483e;
+  font-size: 14px;
+  letter-spacing: 0.5px;
+}
+
+.refresh-button {
+  justify-self: start;
+  margin-top: 8px;
+}
+
 .loan-balance-panel {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -261,6 +281,14 @@
   border-radius: 12px;
 }
 
+.wire-section,
+.history-section {
+  margin-top: 18px;
+  padding: 20px;
+  border: 1px solid #e2e9e6;
+  border-radius: 12px;
+}
+
 .section-heading {
   margin-bottom: 18px;
 }
@@ -288,6 +316,10 @@
   gap: 14px;
 }
 
+.wire-form {
+  gap: 14px;
+}
+
 .payment-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -296,6 +328,153 @@
 
 .payment-actions .submit {
   margin-top: 0;
+}
+
+.wire-confirmation {
+  padding: 14px;
+  border: 1px solid #dcebe4;
+  border-radius: 9px;
+  background: #f7fbf8;
+}
+
+.wire-confirmation p {
+  margin: 0 0 12px;
+  color: #173b34;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.wire-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.wire-actions .submit {
+  margin-top: 0;
+}
+
+.wire-result {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #dcebe4;
+  border-radius: 9px;
+  background: #f7fbf8;
+}
+
+.wire-result div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 12px;
+}
+
+.wire-result strong {
+  color: #54746a;
+  font-weight: 600;
+}
+
+.wire-result span {
+  color: #173b34;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.history-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.history-filter {
+  min-width: 150px;
+}
+
+.history-filter select,
+.history-pagination select {
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid #d8e2dd;
+  border-radius: 8px;
+  background: #fff;
+  color: #193a32;
+  font: inherit;
+  font-size: 12px;
+}
+
+.transaction-table-wrap {
+  overflow-x: auto;
+  margin-top: 16px;
+  border: 1px solid #e2e9e6;
+  border-radius: 9px;
+}
+
+.transaction-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+
+.transaction-table th,
+.transaction-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e7eeea;
+  white-space: nowrap;
+}
+
+.transaction-table th {
+  background: #f4f7f5;
+  color: #54746a;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.transaction-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.credit-amount {
+  color: #17603d;
+  font-weight: 700;
+}
+
+.debit-amount {
+  color: #a2362b;
+  font-weight: 700;
+}
+
+.empty-history {
+  padding: 18px !important;
+  color: #72847d;
+  text-align: center;
+}
+
+.history-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  color: #657b72;
+  font-size: 11px;
+}
+
+.history-pagination label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.history-page-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .deposit-form .field-hint {
@@ -634,5 +813,15 @@ footer {
 
   .payment-actions {
     grid-template-columns: 1fr;
+  }
+
+  .history-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .history-pagination {
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
 }

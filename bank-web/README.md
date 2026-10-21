@@ -83,6 +83,25 @@ The profile page also supports Story 6 loan payments:
   `NO_OUTSTANDING_LOAN` appears without a balance change. The full-balance
   shortcut is disabled when there is no loan to repay.
 
+The dashboard also supports Stories 7–10:
+
+- Use the account number shown under the checking balance to identify the
+  recipient account when testing wires with a second customer. Enter the
+  recipient's 10-digit account number, amount, and optional memo. Select
+  **Review wire** and verify the masked confirmation before selecting
+  **Confirm wire**. Try your own account, a nonexistent account, insufficient
+  funds, and invalid amounts to check that errors are shown and balances do not
+  change. Sign in as the recipient and use **Refresh balances and history** to
+  confirm the incoming wire is reflected in their balance and transaction
+  history.
+- Review the transaction history table for signed amounts, resulting balances,
+  timestamps, and memos. Use the type filter and page-size / previous / next
+  controls to check filtering and pagination.
+- Confirm the checking balance, loan balance, credit limit, and available
+  credit are shown on the dashboard. After each successful operation, balances
+  and the newest transaction history refresh automatically; use the refresh
+  button after activity performed from another account.
+
 The API authenticates profile requests using the signed-in session. Its
 in-memory database is process-local and is cleared when the API restarts; it
 cannot be opened from an external SQLite viewer while using `:memory:`.

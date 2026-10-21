@@ -5,6 +5,7 @@ import {
   parseLoanAmountToCents,
   parseLoanPaymentAmountToCents,
   parseWithdrawalAmountToCents,
+  parseWireAmountToCents,
 } from "./money";
 
 type Address = {
@@ -18,6 +19,7 @@ type Address = {
 type Profile = {
   name: string;
   email: string;
+  accountNumber: string;
   address?: Address;
   avatarUrl?: string;
 };
@@ -83,6 +85,37 @@ type LoanPaymentResponse = {
   transaction: LoanPaymentTransaction;
 };
 
+type TransactionType =
+  | "DEPOSIT"
+  | "WITHDRAWAL"
+  | "LOAN_DRAW"
+  | "LOAN_PAYMENT"
+  | "WIRE_IN"
+  | "WIRE_OUT";
+
+type HistoryTransaction = {
+  type: TransactionType;
+  amountCents: number;
+  direction: string;
+  timestamp: string;
+  resultingBalanceCents: number;
+  memo?: string;
+  wireId?: string;
+};
+
+type TransactionHistoryResponse = {
+  transactions: HistoryTransaction[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+type WireResponse = {
+  wireId: string;
+  balanceCents: number;
+  transaction: HistoryTransaction;
+};
+
 type ProfileDraft = {
   name: string;
   email: string;
@@ -109,6 +142,16 @@ const invalidBorrowMessage =
   "Enter a positive amount with no more than two decimal places.";
 const invalidPaymentMessage =
   "Enter a positive payment with no more than two decimal places.";
+const invalidWireMessage =
+  "Enter a wire amount from $0.01 to $10,000.00 with no more than two decimal places.";
+const transactionTypes: TransactionType[] = [
+  "DEPOSIT",
+  "WITHDRAWAL",
+  "LOAN_DRAW",
+  "LOAN_PAYMENT",
+  "WIRE_IN",
+  "WIRE_OUT",
+];
 
 const addressFields: Array<keyof Address> = [
   "street",
@@ -206,6 +249,25 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
   const [paymentError, setPaymentError] = useState("");
   const [paymentTransaction, setPaymentTransaction] =
     useState<LoanPaymentTransaction | null>(null);
+  const [wireRecipient, setWireRecipient] = useState("");
+  const [wireAmount, setWireAmount] = useState("");
+  const [wireMemo, setWireMemo] = useState("");
+  const [wireError, setWireError] = useState("");
+  const [wireTransaction, setWireTransaction] =
+    useState<HistoryTransaction | null>(null);
+  const [pendingWire, setPendingWire] = useState<{
+    recipientAccountNumber: string;
+    amountCents: number;
+    memo: string;
+  } | null>(null);
+  const [transactions, setTransactions] = useState<HistoryTransaction[]>([]);
+  const [transactionPage, setTransactionPage] = useState(1);
+  const [transactionPageSize, setTransactionPageSize] = useState(20);
+  const [transactionType, setTransactionType] = useState<TransactionType | "ALL">("ALL");
+  const [transactionTotal, setTransactionTotal] = useState(0);
+  const [historyError, setHistoryError] = useState("");
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -214,6 +276,76 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
   const [isWithdrawing, setIsWithdrawing] = useState(false);
   const [isBorrowing, setIsBorrowing] = useState(false);
   const [isPaying, setIsPaying] = useState(false);
+  const [isSendingWire, setIsSendingWire] = useState(false);
+
+  async function loadTransactions(
+    page: number,
+    pageSize: number,
+    type: TransactionType | "ALL",
+    signal?: AbortSignal,
+  ) {
+    setIsLoadingHistory(true);
+    setHistoryError("");
+    const query = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      ...(type === "ALL" ? {} : { type }),
+    });
+    try {
+      const response = await fetch(
+        `/api/accounts/me/transactions?${query.toString()}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          signal,
+        },
+      );
+      if (!response.ok) throw new Error(await responseError(response));
+      const result = (await response.json()) as TransactionHistoryResponse;
+      setTransactions(result.transactions);
+      setTransactionTotal(result.total);
+    } catch (caught) {
+      if (caught instanceof Error && caught.name === "AbortError") return;
+      setHistoryError(
+        caught instanceof Error ? caught.message : "Could not load transaction history.",
+      );
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }
+
+  function refreshHistoryAfterOperation() {
+    if (transactionPage !== 1) {
+      setTransactionPage(1);
+      return;
+    }
+    void loadTransactions(1, transactionPageSize, transactionType);
+  }
+
+  async function refreshAccountData() {
+    setIsRefreshing(true);
+    setError("");
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const [balanceResponse, loanResponse] = await Promise.all([
+        fetch("/api/accounts/me/balance", { headers }),
+        fetch("/api/loans/balance", { headers }),
+      ]);
+      if (!balanceResponse.ok) throw new Error(await responseError(balanceResponse));
+      if (!loanResponse.ok) throw new Error(await responseError(loanResponse));
+      const [balance, loan] = await Promise.all([
+        balanceResponse.json() as Promise<BalanceResponse>,
+        loanResponse.json() as Promise<LoanBalanceResponse>,
+      ]);
+      setBalanceCents(balance.balanceCents);
+      setLoanBalance(loan);
+      await loadTransactions(1, transactionPageSize, transactionType);
+      setTransactionPage(1);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not refresh account balances.");
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -254,6 +386,17 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
     void loadProfile();
     return () => controller.abort();
   }, [token]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadTransactions(
+      transactionPage,
+      transactionPageSize,
+      transactionType,
+      controller.signal,
+    );
+    return () => controller.abort();
+  }, [token, transactionPage, transactionPageSize, transactionType]);
 
   useEffect(() => {
     let objectUrl = "";
@@ -418,6 +561,7 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
       setDepositAmount("");
       setDepositMemo("");
       setMessage(`Deposit complete. Your new balance is ${formatCentsAsCurrency(result.newBalanceCents)}.`);
+      refreshHistoryAfterOperation();
     } catch (caught) {
       setDepositError(
         caught instanceof Error
@@ -468,6 +612,7 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
       setWithdrawalAmount("");
       setWithdrawalMemo("");
       setMessage(`Withdrawal complete. Your new balance is ${formatCentsAsCurrency(result.newBalanceCents)}.`);
+      refreshHistoryAfterOperation();
     } catch (caught) {
       setWithdrawalError(
         caught instanceof Error
@@ -525,6 +670,7 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
       setMessage(
         `Borrow complete. Your checking balance is ${formatCentsAsCurrency(result.balanceCents)}.`,
       );
+      refreshHistoryAfterOperation();
     } catch (caught) {
       setBorrowError(
         caught instanceof Error ? caught.message : "Could not complete the borrow.",
@@ -582,12 +728,80 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
       setPaymentTransaction(result.transaction);
       setPaymentAmount("");
       setMessage("Loan payment complete.");
+      refreshHistoryAfterOperation();
     } catch (caught) {
       setPaymentError(
         caught instanceof Error ? caught.message : "Could not complete the loan payment.",
       );
     } finally {
       setIsPaying(false);
+    }
+  }
+
+  function prepareWire(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setWireError("");
+    setWireTransaction(null);
+
+    const recipientAccountNumber = wireRecipient.trim();
+    if (!/^\d{10}$/.test(recipientAccountNumber)) {
+      setWireError("Enter a 10-digit recipient account number.");
+      return;
+    }
+
+    let amountCents: number;
+    try {
+      amountCents = parseWireAmountToCents(wireAmount);
+    } catch {
+      setWireError(invalidWireMessage);
+      return;
+    }
+
+    setPendingWire({
+      recipientAccountNumber,
+      amountCents,
+      memo: wireMemo.trim(),
+    });
+  }
+
+  async function confirmWire() {
+    if (!pendingWire) return;
+    setIsSendingWire(true);
+    setWireError("");
+    try {
+      const response = await fetch("/api/wires", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          recipientAccountNumber: pendingWire.recipientAccountNumber,
+          amountCents: pendingWire.amountCents,
+          ...(pendingWire.memo ? { memo: pendingWire.memo } : {}),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await responseError(response, {
+          RECIPIENT_NOT_FOUND: "The recipient account was not found (RECIPIENT_NOT_FOUND).",
+          INVALID_RECIPIENT: "You cannot send a wire to your own account.",
+          INSUFFICIENT_FUNDS: "Your checking balance is too low for this wire (INSUFFICIENT_FUNDS).",
+          INVALID_AMOUNT: invalidWireMessage,
+        }));
+      }
+      const result = (await response.json()) as WireResponse;
+      setBalanceCents(result.balanceCents);
+      setWireTransaction(result.transaction);
+      setPendingWire(null);
+      setWireRecipient("");
+      setWireAmount("");
+      setWireMemo("");
+      setMessage(`Wire sent. Your new balance is ${formatCentsAsCurrency(result.balanceCents)}.`);
+      refreshHistoryAfterOperation();
+    } catch (caught) {
+      setWireError(caught instanceof Error ? caught.message : "Could not send the wire.");
+    } finally {
+      setIsSendingWire(false);
     }
   }
 
@@ -646,6 +860,18 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
             <span>Checking balance</span>
             <strong>{formatCentsAsCurrency(balanceCents)}</strong>
             <small>{balanceCents.toLocaleString("en-US")} cents</small>
+            <div className="account-number">
+              <span>Account number</span>
+              <strong>{profile.accountNumber}</strong>
+            </div>
+            <button
+              className="secondary-button refresh-button"
+              disabled={isRefreshing}
+              onClick={() => void refreshAccountData()}
+              type="button"
+            >
+              {isRefreshing ? "Refreshing..." : "Refresh balances and history"}
+            </button>
           </section>
         )}
         {loanBalance && (
@@ -967,6 +1193,219 @@ export default function ProfilePage({ token, onLogout }: ProfilePageProps) {
               </div>
             </div>
           )}
+        </section>
+
+        <section className="wire-section" aria-labelledby="wire-title">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">SEND MONEY</p>
+              <h2 id="wire-title">Send a wire</h2>
+            </div>
+          </div>
+          <form className="wire-form" onSubmit={(event) => prepareWire(event)}>
+            <label>
+              Recipient account number
+              <input
+                autoComplete="off"
+                inputMode="numeric"
+                maxLength={10}
+                onChange={(event) => {
+                  setWireRecipient(event.target.value);
+                  setWireError("");
+                  setPendingWire(null);
+                }}
+                pattern="[0-9]{10}"
+                placeholder="10-digit account number"
+                required
+                value={wireRecipient}
+              />
+            </label>
+            <label>
+              Amount
+              <input
+                autoComplete="off"
+                inputMode="decimal"
+                onChange={(event) => {
+                  setWireAmount(event.target.value);
+                  setWireError("");
+                  setPendingWire(null);
+                }}
+                placeholder="0.00"
+                required
+                type="text"
+                value={wireAmount}
+              />
+            </label>
+            <p className="field-hint">Enter $0.01 to $10,000.00, with up to two decimal places.</p>
+            <label>
+              Memo <span className="optional-label">Optional</span>
+              <input
+                maxLength={500}
+                onChange={(event) => {
+                  setWireMemo(event.target.value);
+                  setPendingWire(null);
+                }}
+                placeholder="e.g. Rent"
+                value={wireMemo}
+              />
+            </label>
+            {wireError && <p className="field-error" role="alert">{wireError}</p>}
+            {pendingWire ? (
+              <div className="wire-confirmation" role="group" aria-label="Confirm wire">
+                <p>
+                  Send {formatCentsAsCurrency(pendingWire.amountCents)} to account
+                  {" "}••••{pendingWire.recipientAccountNumber.slice(-4)}?
+                </p>
+                <div className="wire-actions">
+                  <button
+                    className="secondary-button"
+                    disabled={isSendingWire}
+                    onClick={() => setPendingWire(null)}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="submit"
+                    disabled={isSendingWire}
+                    onClick={() => void confirmWire()}
+                    type="button"
+                  >
+                    {isSendingWire ? "Sending..." : "Confirm wire"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                className="submit"
+                disabled={isSendingWire || !wireAmount.trim() || !wireRecipient.trim()}
+                type="submit"
+              >
+                Review wire
+              </button>
+            )}
+          </form>
+          {wireTransaction && (
+            <div className="wire-result" aria-label="Wire confirmation">
+              <div>
+                <strong>Wire sent</strong>
+                <span>{formatCentsAsCurrency(wireTransaction.amountCents)}</span>
+              </div>
+              <div>
+                <strong>Transaction</strong>
+                <span>WIRE_OUT</span>
+              </div>
+              {wireTransaction.memo && (
+                <div>
+                  <strong>Memo</strong>
+                  <span>{wireTransaction.memo}</span>
+                </div>
+              )}
+              {wireTransaction.wireId && (
+                <div>
+                  <strong>Wire ID</strong>
+                  <span>{wireTransaction.wireId}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section className="history-section" aria-labelledby="history-title">
+          <div className="section-heading history-heading">
+            <div>
+              <p className="eyebrow">ACCOUNT ACTIVITY</p>
+              <h2 id="history-title">Transaction history</h2>
+            </div>
+            <label className="history-filter">
+              Filter by type
+              <select
+                onChange={(event) => {
+                  setTransactionPage(1);
+                  setTransactionType(event.target.value as TransactionType | "ALL");
+                }}
+                value={transactionType}
+              >
+                <option value="ALL">All transactions</option>
+                {transactionTypes.map((type) => (
+                  <option key={type} value={type}>{type.replace("_", " ")}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {historyError && <p className="field-error" role="alert">{historyError}</p>}
+          <div className="transaction-table-wrap">
+            <table className="transaction-table">
+              <thead>
+                <tr>
+                  <th scope="col">Type</th>
+                  <th scope="col">Amount</th>
+                  <th scope="col">Balance after</th>
+                  <th scope="col">Memo</th>
+                  <th scope="col">Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {transactions.map((transaction, index) => {
+                  const isCredit = transaction.direction.startsWith("+");
+                  return (
+                    <tr key={`${transaction.timestamp}-${transaction.type}-${index}`}>
+                      <td>{transaction.type.replace("_", " ")}</td>
+                      <td className={isCredit ? "credit-amount" : "debit-amount"}>
+                        {isCredit ? "+" : "-"}{formatCentsAsCurrency(transaction.amountCents)}
+                      </td>
+                      <td>{formatCentsAsCurrency(transaction.resultingBalanceCents)}</td>
+                      <td>{transaction.memo || "-"}</td>
+                      <td>{new Date(transaction.timestamp).toLocaleString()}</td>
+                    </tr>
+                  );
+                })}
+                {!isLoadingHistory && transactions.length === 0 && (
+                  <tr><td className="empty-history" colSpan={5}>No transactions to show.</td></tr>
+                )}
+                {isLoadingHistory && (
+                  <tr><td className="empty-history" colSpan={5}>Loading transactions...</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="history-pagination">
+            <label>
+              Rows per page
+              <select
+                onChange={(event) => {
+                  setTransactionPage(1);
+                  setTransactionPageSize(Number(event.target.value));
+                }}
+                value={transactionPageSize}
+              >
+                {[5, 10, 20, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}
+              </select>
+            </label>
+            <span>
+              {transactionTotal === 0
+                ? "0 transactions"
+                : `${(transactionPage - 1) * transactionPageSize + 1}–${Math.min(transactionPage * transactionPageSize, transactionTotal)} of ${transactionTotal}`}
+            </span>
+            <div className="history-page-actions">
+              <button
+                className="secondary-button"
+                disabled={transactionPage <= 1 || isLoadingHistory}
+                onClick={() => setTransactionPage((page) => page - 1)}
+                type="button"
+              >
+                Previous
+              </button>
+              <button
+                className="secondary-button"
+                disabled={transactionPage * transactionPageSize >= transactionTotal || isLoadingHistory}
+                onClick={() => setTransactionPage((page) => page + 1)}
+                type="button"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </section>
 
         <section className="picture-section" aria-labelledby="picture-title">
