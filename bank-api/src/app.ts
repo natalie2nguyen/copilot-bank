@@ -8,7 +8,13 @@ app.use(express.json());
 const CREDIT_LIMIT_CENTS = 500_000;
 const MAX_TRANSACTION_CENTS = 1_000_000;
 
-type TransactionType = "DEPOSIT" | "WITHDRAWAL" | "LOAN_DRAW";
+type TransactionType =
+  | "DEPOSIT"
+  | "WITHDRAWAL"
+  | "LOAN_DRAW"
+  | "LOAN_PAYMENT"
+  | "WIRE_IN"
+  | "WIRE_OUT";
 
 type Transaction = {
   type: TransactionType;
@@ -16,6 +22,7 @@ type Transaction = {
   timestamp: string;
   resultingBalanceCents: number;
   memo?: string;
+  wireId?: string;
 };
 
 type Customer = {
@@ -46,6 +53,11 @@ const transactionSchema = z.object({
 });
 const loanDrawSchema = z.object({
   amountCents: z.number().int().positive(),
+});
+const wireSchema = z.object({
+  recipientAccountNumber: z.string().regex(/^\d{10}$/),
+  amountCents: z.number().int().positive().max(MAX_TRANSACTION_CENTS),
+  memo: z.string().optional(),
 });
 
 function sendError(
@@ -79,6 +91,7 @@ function makeTransaction(
   type: TransactionType,
   amountCents: number,
   memo?: string,
+  wireId?: string,
 ): Transaction {
   const transaction: Transaction = {
     type,
@@ -88,6 +101,9 @@ function makeTransaction(
   };
   if (memo !== undefined) {
     transaction.memo = memo;
+  }
+  if (wireId !== undefined) {
+    transaction.wireId = wireId;
   }
   customer.transactions.unshift(transaction);
   return transaction;
@@ -240,6 +256,92 @@ app.post("/api/loans/draws", (request, response) => {
     balanceCents: customer.balanceCents,
     loanBalanceCents: customer.loanBalanceCents,
     transaction,
+  });
+});
+
+app.post("/api/loans/payments", (request, response) => {
+  const customer = getAuthenticatedCustomer(request, response);
+  if (!customer) return;
+
+  const parsed = loanDrawSchema.safeParse(request.body);
+  if (!parsed.success) {
+    sendError(response, 400, "INVALID_AMOUNT", "Payment must be a positive integer number of cents.");
+    return;
+  }
+  if (customer.loanBalanceCents === 0) {
+    sendError(response, 422, "NO_OUTSTANDING_LOAN", "There is no outstanding loan to pay.");
+    return;
+  }
+  if (parsed.data.amountCents > customer.loanBalanceCents) {
+    sendError(response, 422, "OVERPAYMENT", "Payment cannot exceed the outstanding loan balance.");
+    return;
+  }
+  if (parsed.data.amountCents > customer.balanceCents) {
+    sendError(response, 422, "INSUFFICIENT_FUNDS", "Balance is too low for this payment.");
+    return;
+  }
+
+  customer.balanceCents -= parsed.data.amountCents;
+  customer.loanBalanceCents -= parsed.data.amountCents;
+  const transaction = makeTransaction(
+    customer,
+    "LOAN_PAYMENT",
+    parsed.data.amountCents,
+  );
+  response.status(201).json({
+    balanceCents: customer.balanceCents,
+    loanBalanceCents: customer.loanBalanceCents,
+    transaction,
+  });
+});
+
+app.post("/api/wires", (request, response) => {
+  const sender = getAuthenticatedCustomer(request, response);
+  if (!sender) return;
+
+  const parsed = wireSchema.safeParse(request.body);
+  if (!parsed.success) {
+    sendError(response, 400, "INVALID_AMOUNT", "Wire requires a valid recipient account and an amount between 1 and 1,000,000 cents.");
+    return;
+  }
+  if (parsed.data.amountCents > sender.balanceCents) {
+    sendError(response, 422, "INSUFFICIENT_FUNDS", "Balance is too low for this wire.");
+    return;
+  }
+  const recipient = [...customersByEmail.values()].find(
+    (customer) => customer.accountNumber === parsed.data.recipientAccountNumber,
+  );
+  if (!recipient) {
+    sendError(response, 404, "RECIPIENT_NOT_FOUND", "The recipient account was not found.");
+    return;
+  }
+  if (recipient === sender) {
+    sendError(response, 400, "INVALID_RECIPIENT", "You cannot send a wire to your own account.");
+    return;
+  }
+
+  const wireId = randomUUID();
+  sender.balanceCents -= parsed.data.amountCents;
+  recipient.balanceCents += parsed.data.amountCents;
+  const outgoingTransaction = makeTransaction(
+    sender,
+    "WIRE_OUT",
+    parsed.data.amountCents,
+    parsed.data.memo,
+    wireId,
+  );
+  const incomingTransaction = makeTransaction(
+    recipient,
+    "WIRE_IN",
+    parsed.data.amountCents,
+    parsed.data.memo,
+    wireId,
+  );
+  response.status(201).json({
+    wireId,
+    balanceCents: sender.balanceCents,
+    transaction: outgoingTransaction,
+    recipientTransaction: incomingTransaction,
   });
 });
 

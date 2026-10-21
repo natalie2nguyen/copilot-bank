@@ -19,11 +19,11 @@
         {
             "type": "node",
             "request": "launch",
-            "name": "Debug borrow-funds tests",
+            "name": "Debug active test file",
             "program": "${workspaceFolder}/bank-api/node_modules/vitest/vitest.mjs",
             "args": [
                 "run",
-                "tests/borrow-funds.test.ts"
+                "${file}"
             ],
             "cwd": "${workspaceFolder}/bank-api",
             "autoAttachChildProcesses": true,
