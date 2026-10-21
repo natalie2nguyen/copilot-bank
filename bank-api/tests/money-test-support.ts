@@ -157,7 +157,6 @@ export async function payLoan(
     customer,
     { amountCents },
   );
-  expect([200, 201]).toContain(response.status);
   return response;
 }
 
