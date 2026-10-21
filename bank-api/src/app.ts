@@ -1,5 +1,6 @@
 import { randomInt, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import express, { type Request, type Response } from "express";
+import multer from "multer";
 import { z } from "zod";
 
 const app = express();
@@ -34,6 +35,17 @@ type Customer = {
   balanceCents: number;
   loanBalanceCents: number;
   transactions: Transaction[];
+  address?: {
+    street?: string;
+    city?: string;
+    state?: string;
+    postalCode?: string;
+    country?: string;
+  };
+  avatar?: {
+    mimeType: "image/png" | "image/jpeg";
+    buffer: Buffer;
+  };
 };
 
 const customersByEmail = new Map<string, Customer>();
@@ -58,6 +70,27 @@ const wireSchema = z.object({
   recipientAccountNumber: z.string().regex(/^\d{10}$/),
   amountCents: z.number().int().positive().max(MAX_TRANSACTION_CENTS),
   memo: z.string().optional(),
+});
+const addressSchema = z.object({
+  street: z.string().trim().min(1).optional(),
+  city: z.string().trim().min(1).optional(),
+  state: z.string().trim().min(1).optional(),
+  postalCode: z.string().trim().min(1).optional(),
+  country: z.string().trim().min(1).optional(),
+}).partial();
+const profileUpdateSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  email: z.string().trim().email().optional(),
+  address: addressSchema.optional(),
+}).refine(
+  (profile) =>
+    profile.name !== undefined ||
+    profile.email !== undefined ||
+    profile.address !== undefined,
+);
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 },
 });
 
 function sendError(
@@ -84,6 +117,15 @@ function formatCurrency(amountCents: number): string {
     style: "currency",
     currency: "USD",
   }).format(amountCents / 100);
+}
+
+function profileResponse(customer: Customer): Record<string, unknown> {
+  return {
+    name: customer.name,
+    email: customer.email,
+    ...(customer.address ? { address: customer.address } : {}),
+    ...(customer.avatar ? { avatarUrl: "/api/me/avatar" } : {}),
+  };
 }
 
 function makeTransaction(
@@ -177,6 +219,100 @@ app.post("/api/auth/login", (request, response) => {
   const token = randomUUID();
   customersByToken.set(token, customer);
   response.json({ token });
+});
+
+app.get("/api/me", (request, response) => {
+  const customer = getAuthenticatedCustomer(request, response);
+  if (!customer) return;
+  response.json(profileResponse(customer));
+});
+
+app.patch("/api/me", (request, response) => {
+  const customer = getAuthenticatedCustomer(request, response);
+  if (!customer) return;
+
+  const parsed = profileUpdateSchema.safeParse(request.body);
+  if (!parsed.success) {
+    sendError(response, 400, "VALIDATION_ERROR", "Provide a valid name, email, or address update.");
+    return;
+  }
+
+  const updatedEmail = parsed.data.email?.toLowerCase();
+  if (
+    updatedEmail &&
+    updatedEmail !== customer.email &&
+    customersByEmail.has(updatedEmail)
+  ) {
+    sendError(response, 409, "EMAIL_ALREADY_EXISTS", "An account with this email already exists.");
+    return;
+  }
+
+  if (updatedEmail && updatedEmail !== customer.email) {
+    customersByEmail.delete(customer.email);
+    customer.email = updatedEmail;
+    customersByEmail.set(updatedEmail, customer);
+  }
+  if (parsed.data.name !== undefined) {
+    customer.name = parsed.data.name;
+  }
+  if (parsed.data.address !== undefined) {
+    customer.address = {
+      ...customer.address,
+      ...parsed.data.address,
+    };
+  }
+
+  response.json(profileResponse(customer));
+});
+
+app.put("/api/me/avatar", (request, response, next) => {
+  if (!getAuthenticatedCustomer(request, response)) return;
+  avatarUpload.single("avatar")(request, response, (error: unknown) => {
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      sendError(response, 413, "FILE_TOO_LARGE", "Profile pictures must not exceed 2 MB.");
+      return;
+    }
+    if (error) {
+      next(error);
+      return;
+    }
+    next();
+  });
+}, (request, response) => {
+  const customer = getAuthenticatedCustomer(request, response);
+  if (!customer) return;
+
+  if (!request.file) {
+    sendError(response, 400, "VALIDATION_ERROR", "A PNG or JPEG profile picture is required.");
+    return;
+  }
+  if (request.file.mimetype !== "image/png" && request.file.mimetype !== "image/jpeg") {
+    sendError(response, 415, "UNSUPPORTED_MEDIA_TYPE", "Profile pictures must be PNG or JPEG.");
+    return;
+  }
+
+  customer.avatar = {
+    mimeType: request.file.mimetype,
+    buffer: request.file.buffer,
+  };
+  response.status(201).json(profileResponse(customer));
+});
+
+app.get("/api/me/avatar", (request, response) => {
+  const customer = getAuthenticatedCustomer(request, response);
+  if (!customer) return;
+  if (!customer.avatar) {
+    sendError(response, 404, "AVATAR_NOT_FOUND", "No profile picture is available.");
+    return;
+  }
+  response.type(customer.avatar.mimeType).send(customer.avatar.buffer);
+});
+
+app.delete("/api/me/avatar", (request, response) => {
+  const customer = getAuthenticatedCustomer(request, response);
+  if (!customer) return;
+  delete customer.avatar;
+  response.status(204).end();
 });
 
 app.post("/api/accounts/me/deposits", (request, response) => {
