@@ -20,6 +20,7 @@ type TransactionType =
 type Transaction = {
   type: TransactionType;
   amountCents: number;
+  direction: string;
   timestamp: string;
   resultingBalanceCents: number;
   memo?: string;
@@ -138,6 +139,11 @@ function makeTransaction(
   const transaction: Transaction = {
     type,
     amountCents,
+    direction: type === "WITHDRAWAL" ||
+      type === "LOAN_PAYMENT" ||
+      type === "WIRE_OUT"
+      ? `-${amountCents}`
+      : `+${amountCents}`,
     timestamp: new Date().toISOString(),
     resultingBalanceCents: customer.balanceCents,
   };
@@ -507,7 +513,43 @@ app.get("/api/loans/balance", (request, response) => {
 app.get("/api/accounts/me/transactions", (request, response) => {
   const customer = getAuthenticatedCustomer(request, response);
   if (!customer) return;
-  response.json({ transactions: customer.transactions });
+
+  const page = Number(request.query.page ?? 1);
+  const pageSize = Number(request.query.pageSize ?? 20);
+  if (
+    !Number.isInteger(page) ||
+    page < 1 ||
+    !Number.isInteger(pageSize) ||
+    pageSize < 1
+  ) {
+    sendError(response, 400, "VALIDATION_ERROR", "Page and page size must be positive integers.");
+    return;
+  }
+
+  let transactions = customer.transactions;
+  if (request.query.type !== undefined) {
+    const type = request.query.type;
+    if (typeof type !== "string" || ![
+      "DEPOSIT",
+      "WITHDRAWAL",
+      "LOAN_DRAW",
+      "LOAN_PAYMENT",
+      "WIRE_IN",
+      "WIRE_OUT",
+    ].includes(type)) {
+      sendError(response, 400, "VALIDATION_ERROR", "Transaction type is invalid.");
+      return;
+    }
+    transactions = transactions.filter((transaction) => transaction.type === type);
+  }
+
+  const start = (page - 1) * pageSize;
+  response.json({
+    transactions: transactions.slice(start, start + pageSize),
+    page,
+    pageSize,
+    total: transactions.length,
+  });
 });
 
 app.use((_request, response) => {
